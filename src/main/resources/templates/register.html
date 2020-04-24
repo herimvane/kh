@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="renderer" content="webkit">
+
+    <title>毕节银保监分局2020人事考核 - 注册</title>
+    <meta name="keywords" content="毕节银保监分局">
+    <meta name="description" content="人事考核">
+
+    <link href="/static/css/bootstrap.min.css?v=3.4.0" rel="stylesheet">
+    <link href="/static/font-awesome/css/font-awesome.css?v=4.3.0" rel="stylesheet">
+    <link href="/static/css/plugins/iCheck/custom.css" rel="stylesheet">
+    <link href="/static/css/animate.css" rel="stylesheet">
+    <link href="/static/css/style.css?v=2.2.0" rel="stylesheet">
+    <link href="/static/css/plugins/chosen/chosen.css" rel="stylesheet">
+
+</head>
+
+<body class="gray-bg">
+
+    <div class="middle-box text-center loginscreen   animated fadeInDown">
+        <div>
+            <div>
+
+                <h1 class="logo-name">CBIRC-BJ</h1>
+
+            </div>
+            <h3>欢迎注册</h3>
+            <p>创建一个新账户</p>
+            <form class="m-t" role="form" id="registerForm">
+                <div class="form-group">
+                    <input type="text" class="form-control" placeholder="请输入用户名" name="name" id="name">
+                </div>
+                <div class="form-group">
+                    <input type="password" class="form-control" placeholder="请输入密码" name="password" id="password">
+                </div>
+                <div class="form-group">
+                    <input type="password" class="form-control" placeholder="请再次输入密码" name="repassword" id="repassword">
+                </div>
+                   <div class="form-group">
+                	 <select class="chosen-select form-control m-b" name="positionSelect" id="positionSelect">
+                	 	 <option value="">选择职位</option>
+                	 	 <option th:each="position : ${positions}" th:value="${position.id}" th:text="${position.name}"></option>
+                     </select>
+                </div>
+                <div class="form-group" style="display: none;" id="deptSelectDiv">
+                	 <select class="chosen-select form-control m-b" name="deptSelect" id="deptSelect">
+                	 	 <option value="">选择所在部门</option>
+                         <option th:each="dept : ${depts}" th:value="${dept.id}" th:text="${dept.name}"></option>
+                     </select>
+                </div>
+                
+                <div class="form-group" style="display: none;" id="fgdeptSelectDiv">
+                	 <select class="chosen-select form-control" name="fgdeptSelect" id="fgdeptSelect" multiple>
+                	 	 <option value="">选择分管部门</option>
+                         <option th:each="dept : ${depts}" th:value="${dept.id}" th:text="${dept.name}"></option>
+                     </select>
+                </div>
+                <button type="button" class="btn btn-primary block full-width m-b" id="registerBtn">注 册</button>
+
+                <p class="text-muted text-center"><small>已经有账户了？</small><a href="to-login">点此登录</a>
+                </p>
+
+            </form>
+        </div>
+    </div>
+
+    <!-- Mainly scripts -->
+    <script src="/static/js/jquery-2.1.1.min.js"></script>
+    <script src="/static/js/bootstrap.min.js?v=3.4.0"></script>
+    <!-- iCheck -->
+    <script src="/static/js/plugins/iCheck/icheck.min.js"></script>
+    <script src="/static/js/plugins/validate/jquery.validate.min.js"></script>
+    <script src="/static/js/plugins/validate/messages_zh.min.js"></script>
+    <script src="/static/js/plugins/chosen/chosen.jquery.js"></script>
+    <script>
+        $(document).ready(function () {
+        	
+        	$("#positionSelect").chosen({ width: '100%',placeholder_text_single: '请选择职位'});
+        	$("#deptSelect").chosen({ width: '100%',placeholder_text_single: '请选择所在部门'});
+        	$("#fgdeptSelect").chosen({ width: '100%',placeholder_text_multiple: '请选择分管部门'});
+        	
+            $('.i-checks').iCheck({
+                checkboxClass: 'icheckbox_square-green',
+                radioClass: 'iradio_square-green',
+            });
+            $("#positionSelect").chosen().change(function(evt, params){
+            	$("#positionSelect").chosen().val();
+            	var selectText = $(this).find("option:selected").text();
+            	if(selectText != '局长' && selectText !='其他局领导'){
+            		$("#deptSelectDiv").show();
+            		$("#fgdeptSelect").val('').trigger("chosen:updated");
+            		$("#fgdeptSelectDiv").hide();
+            	} else {
+            		$("#fgdeptSelectDiv").show();
+            		$("#deptSelect").val('').trigger("chosen:updated");
+            		$("#deptSelectDiv").hide();
+            	}
+            	
+            });
+            
+           	$("#registerForm").validate({
+                rules: {
+                    name: {
+                        required: true,
+                        minlength: 2
+                    },
+                    password: {
+                        required: true,
+                        minlength: 8
+                    },
+                    repassword: {
+                        required: true,
+                        minlength: 8,
+                        equalTo: "#password"
+                    },
+                    positionSelect: "required",
+                    deptSelect: "required",
+                    fgdeptSelect: "required"
+                },
+                messages: {
+                    username: {
+                        required: "请输入您的用户名",
+                        minlength: "用户名必须两个字符以上"
+                    },
+                    password: {
+                        required: "请输入您的密码",
+                        minlength: "密码必须8个字符以上"
+                    },
+                    repassword: {
+                        required: "请再次输入密码",
+                        minlength: "密码必须8个字符以上",
+                        equalTo: "两次输入的密码不一致"
+                    },
+                    positionSelect: "请选择职位",
+                    deptSelect: "请选择所在部门",
+                    fgdeptSelect: "请选择分管部门"
+                }
+            });
+            $("#registerBtn").click(function() {
+            	
+            	var positionSelect = $("#positionSelect").chosen().val();
+            	var deptSelect = $("#deptSelect").chosen().val();
+            	var fgdeptSelects = $("#fgdeptSelect").chosen().val();
+            	if(positionSelect == null || positionSelect=="")  {
+            		alert("请选择职位");
+            		return;
+            	}
+            	var selectText = $("#positionSelect").find("option:selected").text();
+            	if(selectText != '局长' && selectText !='其他局领导'){ 
+            		if(deptSelect == null || deptSelect=="")  {
+                		alert("请选择所在部门");
+                		return;
+                	}
+            	} else {
+            		if(fgdeptSelects == null || fgdeptSelects.length == 0)  {
+                		alert("请选择分管部门");
+                		return;
+                	}
+            	}
+            	
+            	var fgdepts = new Array(fgdeptSelects.length);
+            	for(i=0;i<fgdeptSelects.length;i++) {
+            		fgdepts[i] = {"id" : fgdeptSelects[i]};
+            	}
+            	if($("#registerForm").valid()) {
+	            	$.ajax({
+	            		type: "POST",
+	            		contentType: "application/json",
+	            		url : "/user/register",
+	            		dataType : "json",
+	            		data : JSON.stringify({
+	            			"name" : $("#name").val(),
+	            			"password" : $("#password").val(),
+	            			"position" : {"id" : $("#positionSelect").val()}, 
+	            			"dept" : {"id" : $("#deptSelect").val()},
+	            			"deptsInLeader" : fgdepts,
+	            		}),
+	            		success: function(data) {
+	            			if(data.code==0)
+	            				window.location.href=data.url;
+	            			else
+	            				alert(data.msg);
+	            		}
+	            	});
+            	}
+            });
+            
+            
+            
+            
+        });
+    </script>
+
+
+</body>
+
+</html>
