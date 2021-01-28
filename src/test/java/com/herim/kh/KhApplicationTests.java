@@ -15,7 +15,7 @@ class KhApplicationTests {
         //加密次数
         int hashInteractions = 2;
         //盐值
-        String salt = "黄山";
+        String salt = "HERIMVANE";
         //原密码
         String pwd = "passwordme";
         //将得到的result放到数据库中就行了。

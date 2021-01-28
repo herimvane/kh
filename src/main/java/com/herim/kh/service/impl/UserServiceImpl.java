@@ -110,7 +110,7 @@ public class UserServiceImpl implements UserService {
 	
 	@Override
 	public User addUser(User user) {
-		String password = (new SimpleHash("MD5", user.getPassword(), ByteSource.Util.bytes(user.getName()), 2)).toString();
+		String password = (new SimpleHash("MD5", user.getPassword(), ByteSource.Util.bytes("HERIMVANE"), 2)).toString();
 		user.setPassword(password);
 		user.setStatus(0);
 		if(user.getDeptsInLeader().get(0).getId().length()==0) user.setDeptsInLeader(null);

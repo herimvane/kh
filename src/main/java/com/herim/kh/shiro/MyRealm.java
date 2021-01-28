@@ -63,7 +63,7 @@ public class MyRealm extends AuthorizingRealm{
             throw new UnknownAccountException(
                     "未知账户	");
         }
-       SimpleAuthenticationInfo info = new SimpleAuthenticationInfo(user.getName(), user.getPassword(),ByteSource.Util.bytes(user.getName()), this.getName());
+       SimpleAuthenticationInfo info = new SimpleAuthenticationInfo(user.getName(), user.getPassword(),ByteSource.Util.bytes("HERIMVANE"), this.getName());
         //SimpleAuthenticationInfo info = new SimpleAuthenticationInfo(user.getName(), user.getPassword(),ByteSource.Util.bytes("文仙运"), this.getName());
         return info;
 	}

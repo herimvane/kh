@@ -166,17 +166,6 @@ public class UserController {
 		return "assess";
 	}
 	
-	/**
-	 * 跳转得分情况页面
-	 * @param model
-	 * @return
-	 */
-	@RequestMapping("/to-score/{sjdf}")
-	public String toScore(Model model, @PathVariable double sjdf) {
-		List<UserScore> userScores = userService.calculateAllUsersScore(sjdf);
-		model.addAttribute("userScores", userScores);
-		return "score";
-	}
 	
 	/**
 	 * 生成考核任务
