@@ -224,9 +224,15 @@ public class UserController {
 	@ResponseBody
 	public Message generateAssessment(@RequestBody Assessment assessment) throws MyException {
 		Message message = new Message();
-		userService.rating(assessment);
-		message.setMsg("ok");
-		message.setCode(0);
+		if(operationService.haveOperation("rating", 1)) {
+			userService.rating(assessment);
+			message.setMsg("ok");
+			message.setCode(0);
+		}else {
+			message.setCode(1);
+			message.setMsg("还未开放此功能，请等待通知。");
+		}
+		
 		return message;
 	}
 	/**

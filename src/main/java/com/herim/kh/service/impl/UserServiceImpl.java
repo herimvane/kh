@@ -1,12 +1,14 @@
 package com.herim.kh.service.impl;
 
+import java.text.Collator;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.shiro.crypto.hash.SimpleHash;
 import org.apache.shiro.util.ByteSource;
@@ -27,7 +29,7 @@ import com.herim.kh.domain.UserScore;
 import com.herim.kh.exceptionhandler.MyException;
 import com.herim.kh.service.UserService;
 
-import ch.qos.logback.core.joran.conditional.IfAction;
+import net.sourceforge.pinyin4j.PinyinHelper;
 
 @Service
 public class UserServiceImpl implements UserService {
@@ -58,20 +60,21 @@ public class UserServiceImpl implements UserService {
 	
 	//打分权重
 	//1.对部门部门负责人考核
-	private static final double $1_JZ_BMFZR = 0.3*0.4;//局长对部门负责人
-	private static final double $1_QTJLD_BMFZR = 0.3*0.6;//其他局领导对部门负责人
+	private static final double $1_JZ_BMFZR = 0.4*0.3;//局长对部门负责人
+	private static final double $1_QTJLD_BMFZR = 0.4*0.7;//其他局领导对部门负责人
 	private static final double $1_QTKJGB_BMFZR = 0.2;//其他部门负责人对部门负责人
-	private static final double $1_BBMQTGB_BMFZR = 0.3;//本部门其他干部对部门负责人
+	private static final double $1_BBMQTGB_BMFZR = 0.2;//本部门其他干部对部门负责人
 	private static final double $1_BMDF_BMFZR = 0.2;//部门得分对部门负责人
 	
 	//2.对纪委办公室负责人考核
 	private static final double $2_SJJWBGJ_JWBGSFZR = 0.8;//省局纪委办公室反馈得分
-	private static final double $2_JZ_JWBGSFZR = 0.06*0.4;//局长评分
-	private static final double $2_QTJLD_JWBGSFZR = 0.06*0.6;//其他局领导评分
+	private static final double $2_JZ_JWBGSFZR = 0.06*0.3;//局长评分
+	private static final double $2_QTJLD_JWBGSFZR = 0.06*0.7;//其他局领导评分
 	private static final double $2_QTKJGB_JWBGSFZR = 0.04;//其他负责人评分
 	private static final double $2_BBMQTGB_JWBGSFZR = 0.06;//本部门其他干部评分
 	private static final double $2_BMDF_JWBGSFZR = 0.04;//部门得分
 	
+	/*
 	//3.对其他科级干部考核
 	private static final double $3_JZ_QTKJGB = 0.3*0.3;//局长打分
 	private static final double $3_FGLD_QTKJGB = 0.3*0.4;//分管领导打分
@@ -81,7 +84,7 @@ public class UserServiceImpl implements UserService {
 	private static final double $3_BBMQTGB_QTKJGB = 0.3;//本部门其他干部打分
 	private static final double $3_BMDF_QTKJGB = 0.2;//部门得分
 	
-	//4.对纪委办公室负责人考核
+	//4.对纪委办公室其他科级干部考核
 	private static final double $4_JZ_JWBGSQTKJGB = 0.5*0.3;//局领导打分
 	private static final double $4_FGLD_JWBGSQTKJGB = 0.5*0.6;//分管领导打分
 	private static final double $4_QTJLD_JWBGSQTKJGB = 0.5*0.1;//其他局领导打分
@@ -89,12 +92,18 @@ public class UserServiceImpl implements UserService {
 	private static final double $4_QTKJGB_JWBGSQTKJGB = 0.1;//其他科级干部打分
 	private static final double $4_BBMQTGB_JWBGSQTKJGB = 0.1;//部门其他干部打分
 	private static final double $4_BMDF_JWBGSQTKJGB = 0.1;//部门得分
+	*/
 	
-	//5.对其他干部的考核
-	private static final double $5_FGLD_QTGB = 0.3;//分管领导
-	private static final double $5_BMFZR_QTGB = 0.4;//部门负责人
+	
+	//5.对机关其他干部的考核
+	private static final double $5_FGLD_QTGB = 0.35;//分管领导
+	private static final double $5_BMFZR_QTGB = 0.35;//部门负责人
 	private static final double $5_BBMQTGB_QTGB = 0.3;//本部门其他干部
 	
+	//6.对监管组其他干部考核
+	private static final double $6_FGLD_JGZQTGB = 0.35;//分管领导
+	private static final double $6_BMFZR_JGZQTGB = 0.35;//部门负责人
+	private static final double $6_FJZNBM_JGZQTGB = 0.3;//本部门其他干部
 	
 	
 	
@@ -194,7 +203,7 @@ public class UserServiceImpl implements UserService {
 	 * 对其他科级干部打分
 	 * @param user
 	 */
-	private void generateAssessment4QTKJGB(User user) {
+	/*private void generateAssessment4QTKJGB(User user) {
 		//2.对其他科级干部的考核
 		//获得所有其他科级干部
 		Position position_qtkjgb = positionRepository.findByName(QTKJGB);
@@ -303,13 +312,13 @@ public class UserServiceImpl implements UserService {
 			}
 			
 		}
-	}
+	}*/
 	
 	/**
 	 * 对其他科级以下干部打分
 	 * @param user
 	 */
-	private void generateAssessment4QTKJYXGB(User user) {
+	/*private void generateAssessment4QTKJYXGB(User user) {
 		//3.对科级以下干部的考核
 		//获得所有其他科级以下干部
 		Position position_qtkjyxgb = positionRepository.findByName(KJYXGB);
@@ -337,6 +346,102 @@ public class UserServiceImpl implements UserService {
 				assessmentRepository.save(assessment);
 			}
 		}
+	}*/
+	
+	/**
+	 * 对其他干部打分
+	 * @param user
+	 */
+	private void generateAssessment4QTGB(User user) {
+		//科级以下干部
+		Position position_qtkjyxgb = positionRepository.findByName(KJYXGB);
+		List<User> qtkjyxgbs = findByPosition(position_qtkjyxgb);
+		Iterator<User> iterator = qtkjyxgbs.iterator();
+		while(iterator.hasNext()) {//去除监管组干部
+			User u = iterator.next();
+			if(u.getDept().getName().contains("监管组")) iterator.remove();
+		}
+		//其他科级干部
+		Position position_qtkjgb = positionRepository.findByName(QTKJGB);
+		List<User> qtkjgbs = findByPosition(position_qtkjgb);
+		Iterator<User> iterator2 = qtkjgbs.iterator();
+		while(iterator.hasNext()) {//去除监管组干部
+			User u = iterator.next();
+			if(u.getDept().getName().contains("监管组")) iterator2.remove();
+		}
+		qtkjyxgbs.addAll(qtkjgbs);
+		
+		for(User qtkjyxgb : qtkjyxgbs) {
+			if(qtkjyxgb.getName().equals(user.getName())) continue;
+			if(isFGLD(user, qtkjyxgb) || isBMFZR(user, qtkjyxgb) || isBBMGBNotFZR(qtkjyxgb, user)) {//具有打分权限的人
+				Assessment assessment = new Assessment();
+				assessment.setAssesser(user);//设置打分人
+				assessment.setUser(qtkjyxgb);//设置被考核人
+				assessment.setScore(0);
+				assessment.setUserDeptId(qtkjyxgb.getDept().getId());
+				if(isFGLD(user, qtkjyxgb)) {
+					assessment.setWeight($5_FGLD_QTGB);
+					assessment.setType("B_FGLD_QTGB");
+				}
+				if(isBMFZR(user, qtkjyxgb)) {
+					assessment.setWeight($5_BMFZR_QTGB);
+					assessment.setType("B_BMFZR_QTGB");
+				}
+				if(isBBMGBNotFZR(qtkjyxgb, user)) {
+					assessment.setWeight($5_BBMQTGB_QTGB);
+					assessment.setType("B_BBMQTGB_QTGB");
+				}
+				assessmentRepository.save(assessment);
+			}
+		}
+	}
+	
+	/**
+	 * 对其监管组干部打分
+	 * @param user
+	 */
+	private void generateAssessment4JGZQTGB(User user) {
+		//科级以下干部
+		Position position_qtkjyxgb = positionRepository.findByName(KJYXGB);
+		List<User> qtkjyxgbs = findByPosition(position_qtkjyxgb);
+		Iterator<User> iterator = qtkjyxgbs.iterator();
+		while(iterator.hasNext()) {//去除非监管组干部
+			User u = iterator.next();
+			if(!u.getDept().getName().contains("监管组")) iterator.remove();
+		}
+		//其他科级干部
+		Position position_qtkjgb = positionRepository.findByName(QTKJGB);
+		List<User> qtkjgbs = findByPosition(position_qtkjgb);
+		Iterator<User> iterator2 = qtkjgbs.iterator();
+		while(iterator2.hasNext()) {//去除非监管组干部
+			User u = iterator2.next();
+			if(!u.getDept().getName().contains("监管组")) iterator2.remove();
+		}
+		qtkjyxgbs.addAll(qtkjgbs);
+		
+		for(User qtkjyxgb : qtkjyxgbs) {
+			if(qtkjyxgb.getName().equals(user.getName())) continue;
+			if(isFGLD(user, qtkjyxgb) || isBMFZR(user, qtkjyxgb) || isFJDWZNBMFZR(user)) {//具有打分权限的人
+				Assessment assessment = new Assessment();
+				assessment.setAssesser(user);//设置打分人
+				assessment.setUser(qtkjyxgb);//设置被考核人
+				assessment.setScore(0);
+				assessment.setUserDeptId(qtkjyxgb.getDept().getId());
+				if(isFGLD(user, qtkjyxgb)) {
+					assessment.setWeight($6_FGLD_JGZQTGB);
+					assessment.setType("C_FGLD_JGZQTGB");
+				}
+				if(isBMFZR(user, qtkjyxgb)) {
+					assessment.setWeight($6_BMFZR_JGZQTGB);
+					assessment.setType("C_BMFZR_JGZQTGB");
+				}
+				if(isFJDWZNBMFZR(user)) {
+					assessment.setWeight($6_FJZNBM_JGZQTGB);
+					assessment.setType("C_FJZNBM_JGZQTGB");
+				}
+				assessmentRepository.save(assessment);
+			}
+		}
 	}
 	
 	/**
@@ -348,8 +453,8 @@ public class UserServiceImpl implements UserService {
 		try {
 			if(user.getStatus()!=0) return;
 			generateAssessment4BMFZR(user);
-			generateAssessment4QTKJGB(user);
-			generateAssessment4QTKJYXGB(user);
+			generateAssessment4QTGB(user);
+			generateAssessment4JGZQTGB(user);
 			updateUserStatus(1, user.getId());
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -364,8 +469,8 @@ public class UserServiceImpl implements UserService {
 			List<User> users = userRepository.findAll();
 			for(User user : users) {
 				generateAssessment4BMFZR(user);
-				generateAssessment4QTKJGB(user);
-				generateAssessment4QTKJYXGB(user);
+				generateAssessment4QTGB(user);
+				generateAssessment4JGZQTGB(user);
 				updateUserStatus(1, user.getId());
 			}
 		} catch (Exception e) {
@@ -407,12 +512,12 @@ public class UserServiceImpl implements UserService {
 			}
 			//部门只有一个负责人
 			if("李继明".equals(user.getName()) || "黄山".equals(user.getName()) || "邓学刚".equals(user.getName()) ) {
-				us.setFinalScore(obj.getFinalscore()+95*0.3);
+				us.setFinalScore(obj.getFinalscore()+95*0.2);
 			}
 			//部门只有一个其他干部
-			if("杨杰".equals(user.getName()) || "杨波".equals(user.getName()) || "张洪".equals(user.getName()) ||"赵二佳".equals(user.getName())) {
+			/*if("杨杰".equals(user.getName()) || "杨波".equals(user.getName()) || "张洪".equals(user.getName()) ||"赵二佳".equals(user.getName())) {
 				us.setFinalScore(obj.getFinalscore()+95*0.3);
-			}
+			}*/
 			userScores.add(us);
 		}
 		Collections.sort(userScores, new Comparator<UserScore>() {
@@ -437,7 +542,18 @@ public class UserServiceImpl implements UserService {
 	
 	@Override
 	public List<Assessment> findMyAssessmentsByType(User user, String type) {
-		return assessmentRepository.findByUserAndType(user.getId(), type);
+		List<Assessment> assessments =  assessmentRepository.findByUserAndType(user.getId(), type);
+		
+		Collections.sort(assessments, new Comparator<Assessment>() {
+			@Override
+			public int compare(Assessment o1, Assessment o2) {
+				String x1 = PinyinHelper.toHanyuPinyinStringArray(o1.getUser().getName().charAt(0))[0];
+				String x2 = PinyinHelper.toHanyuPinyinStringArray(o2.getUser().getName().charAt(0))[0];
+				System.out.println(x1+"--"+x2);
+				return x1.compareTo(x2);
+			}
+		});
+		return assessments;
 	}
 	
 	//是否为局长
@@ -498,6 +614,16 @@ public class UserServiceImpl implements UserService {
 	private boolean isBBMGBNotFZR(User me, User other) {
 		if(other.getDept()==null) return false;
 		if(!BMFZR.equals(other.getPosition().getName()) && other.getDept().getName().equals(me.getDept().getName())) return true;else return false;
+	}
+	
+	//是否为分局党委职能部门负责人，即人事科、纪委办公室、办公室负责人
+	private boolean isFJDWZNBMFZR(User user) {
+		if(user.getPosition().getName().equals(BMFZR)) {
+			if(user.getDept().getName().equals("人事科")) return true;
+			if(user.getDept().getName().equals("纪委办公室")) return true;
+			if(user.getDept().getName().equals("办公室")) return true;
+		}
+		return false;
 	}
 	
 

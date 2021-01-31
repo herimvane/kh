@@ -53,6 +53,9 @@
     		.navbar-brand span {
     			display: none;
     		}
+    		.navbar-brand i {
+    			font-size: 15px;
+    		}
     	}
     	
     	.dropdown-item {
@@ -134,12 +137,15 @@
 			min-height: 1px;
 			padding: 1.25rem;
 		}
+		.card-title {
+			color: #ccff33;
+		}
     </style>
   </head>
   <body style="background-color: #f3f3f4;">
   	<div>
 	  	<nav class="navbar shadow">
-		  <a class="navbar-brand"><i class="fa fa-file" aria-hidden="true"></i><span>毕节银保监分局2020年度人事考核</span></a>
+		  <a class="navbar-brand"><i class="fa fa-file" aria-hidden="true"></i><span>毕节银保监分局度人事考核</span><i style="color: red;">(按姓氏字母排序)</i></a>
 		  <div class="navbar-user dropdown">
 			  <a class="dropdown-toggle" id="userdrop" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"><span th:text="${session.user.name}"></span><i class="fa fa-user" aria-hidden="true"></i>
 			  </a>
@@ -189,7 +195,7 @@
 			    <div class="card-header" id="headingCharge">
 			      <h2 class="mb-0">
 			        <button class="btn btn-link" type="button" data-toggle="collapse" data-target="#collapseCharge" aria-expanded="true" aria-controls="collapseCharge">
-			          部门主要负责人考核<i class="fa fa-chevron-down" aria-hidden="true"></i>
+			          部门主要负责人考核<span style="color: #ccff33;font-size: 15px;">(优秀可选3人)</span><i class="fa fa-chevron-down" aria-hidden="true"></i>
 			        </button>
 			      </h2>
 			    </div>
@@ -201,7 +207,7 @@
 								  <div class="card-body">
 								    <h4 class="card-title" th:text="${assessment.user.name}"></h4>
 								    <p class="card-text" th:text="${assessment.user.dept.name}"></p>
-								   	<div class="raty" th:id="'raty_a_'+${assessment.id}" th:attr="data-score=${assessment.score}"></div>
+								   	<div class="raty" th:id="'raty_a_'+${assessment.id}" th:attr="data-score=${(assessment.score-65)/10 + 1}"></div>
 									<span class="your-rating" th:id="'rating_a_'+${assessment.id}">
 					                </span>
 								  </div>
@@ -214,7 +220,7 @@
 			    <div class="card-header" id="headingfk">
 			      <h2 class="mb-0">
 			        <button class="btn btn-link collapsed" type="button" data-toggle="collapse" data-target="#collapsefk" aria-expanded="false" aria-controls="collapsefk">
-			          其他科级干部考核<i class="fa fa-chevron-down" aria-hidden="true"></i>
+			          机关其他干部考核<i class="fa fa-chevron-down" aria-hidden="true"></i>
 			        </button>
 			      </h2>
 			    </div>
@@ -226,7 +232,7 @@
 							  <div class="card-body">
 							    <p class="card-title" th:text="${assessment.user.name}"></p>
 							    <p class="card-text" th:text="${assessment.user.dept.name}"></p>
-							   	<div class="raty" th:id="'raty_b_'+${assessment.id}" th:attr="data-score=${assessment.score}"></div>
+							   	<div class="raty" th:id="'raty_b_'+${assessment.id}" th:attr="data-score=${(assessment.score-65)/10 + 1}"></div>
 								<span class="your-rating" th:id="'rating_b_'+${assessment.id}">
 				                </span>
 							  </div>
@@ -240,7 +246,7 @@
 			    <div class="card-header" id="headingky">
 			      <h2 class="mb-0">
 			        <button class="btn btn-link collapsed" type="button" data-toggle="collapse" data-target="#collapseky" aria-expanded="false" aria-controls="collapseky">
-			          科级以下干部考核<i class="fa fa-chevron-down" aria-hidden="true"></i>
+			          监管组其他干部考核<i class="fa fa-chevron-down" aria-hidden="true"></i>
 			        </button>
 			      </h2>
 			    </div>
@@ -252,7 +258,7 @@
 								  <div class="card-body">
 								    <p class="card-title" th:text="${assessment.user.name}"></p>
 								    <p class="card-text" th:text="${assessment.user.dept.name}"></p>
-								   	<div class="raty" th:id="'raty_c_'+${assessment.id}" th:attr="data-score=${assessment.score}"></div>
+								   	<div class="raty" th:id="'raty_c_'+${assessment.id}" th:attr="data-score=${(assessment.score-65)/10 + 1}"></div>
 									<span class="your-rating" th:id="'rating_c_'+${assessment.id}">
 					                </span>
 								  </div>
@@ -328,10 +334,10 @@
 		            		dataType : "json",
 		            		data : JSON.stringify({
 		            			"id" : cr.id.split('_')[2],
-		            			"score" : score
+		            			"score" : (score-1) *10 + 65
 		            		}),
 		            		success: function(data) {
-		            			if(data.status==1) alert(data.msg);
+		            			if(data.code==1) alert(data.msg);
 		            		}
 		            	});
 		        	  

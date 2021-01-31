@@ -21,6 +21,7 @@ class KhApplicationTests {
         //将得到的result放到数据库中就行了。
         String result = new SimpleHash(hashAlgorithmName, pwd, ByteSource.Util.bytes(salt), hashInteractions).toHex();
         System.out.println(result);
+        System.out.println("好".codePointAt(0));
 	}
 	
 
