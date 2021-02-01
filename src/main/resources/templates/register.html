@@ -149,6 +149,7 @@
             	var positionSelect = $("#positionSelect").chosen().val();
             	var deptSelect = $("#deptSelect").chosen().val();
             	var fgdeptSelects = $("#fgdeptSelect").chosen().val();
+            	var fgdepts = null;
             	if(positionSelect == null || positionSelect=="")  {
             		alert("请选择职位");
             		return;
@@ -163,13 +164,14 @@
             		if(fgdeptSelects == null || fgdeptSelects.length == 0)  {
                 		alert("请选择分管部门");
                 		return;
+                	} else {
+                		fgdepts = new Array(fgdeptSelects.length);
+                    	for(i=0;i<fgdeptSelects.length;i++) {
+                    		fgdepts[i] = {"id" : fgdeptSelects[i]};
+                    	}
                 	}
             	}
             	
-            	var fgdepts = new Array(fgdeptSelects.length);
-            	for(i=0;i<fgdeptSelects.length;i++) {
-            		fgdepts[i] = {"id" : fgdeptSelects[i]};
-            	}
             	if($("#registerForm").valid()) {
 	            	$.ajax({
 	            		type: "POST",

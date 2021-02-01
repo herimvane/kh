@@ -122,7 +122,8 @@ public class UserServiceImpl implements UserService {
 		String password = (new SimpleHash("MD5", user.getPassword(), ByteSource.Util.bytes("HERIMVANE"), 2)).toString();
 		user.setPassword(password);
 		user.setStatus(0);
-		if(user.getDeptsInLeader().get(0).getId().length()==0) user.setDeptsInLeader(null);
+		if (user.getDeptsInLeader() != null)
+			if(user.getDeptsInLeader().get(0).getId().length()==0) user.setDeptsInLeader(null);
 		if(user.getDept().getId().length()==0) user.setDept(null);
 		if(user.getPosition().getId().length()==0) user.setPosition(null);
 		user.setPassword(password);
