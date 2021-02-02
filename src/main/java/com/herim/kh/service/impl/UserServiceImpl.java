@@ -1,6 +1,6 @@
 package com.herim.kh.service.impl;
 
-import java.text.Collator;
+import java.io.UnsupportedEncodingException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -8,12 +8,10 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Locale;
 
 import org.apache.shiro.crypto.hash.SimpleHash;
 import org.apache.shiro.util.ByteSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Propagation;
@@ -28,16 +26,12 @@ import com.herim.kh.domain.User;
 import com.herim.kh.domain.UserScore;
 import com.herim.kh.exceptionhandler.MyException;
 import com.herim.kh.service.UserService;
+import com.herim.kh.utils.Bihua;
 
 import net.sourceforge.pinyin4j.PinyinHelper;
 
 @Service
 public class UserServiceImpl implements UserService {
-	
-	
-	
-	@Autowired
-    private JdbcTemplate jdbcTemplate;
 	
 	@Autowired
 	private UserRepository userRepository;
@@ -52,9 +46,8 @@ public class UserServiceImpl implements UserService {
 	
 	private static final String JZ = "局长";
 	private static final String QTJLD = "其他局领导";
-	private static final String BMFZR = "部门负责人";
-	private static final String QTKJGB = "其他科级干部";
-	private static final String KJYXGB = "科级以下干部";
+	private static final String BMFZR = "部门主要负责人";
+	private static final String QTGB = "其他干部";
 	
 	private static final String JWBGS = "纪委办公室";
 	
@@ -152,7 +145,7 @@ public class UserServiceImpl implements UserService {
 		for(User bmfzr : bmfzrs) {
 			
 			if(bmfzr.getName().equals(user.getName())) continue;//本人不打分
-			if(isJZ(user) || isQTJDL(user) || isKJGB(user) || isBBMQTKJYXGB(bmfzr, user)) {//具有打分权限的人
+			if(isJZ(user) || isQTJDL(user) || isBMFZR(user) || isBBM(bmfzr, user)) {//具有打分权限的人
 				Assessment assessment = new Assessment();
 				assessment.setAssesser(user);//设置打分人
 				assessment.setUser(bmfzr);//设置被考核人
@@ -167,12 +160,12 @@ public class UserServiceImpl implements UserService {
 						assessment.setWeight($2_QTJLD_JWBGSFZR);//其他局领导
 						assessment.setType("A_QTJLD_JWBGSFZR");
 					}
-					else if(isKJGB(user)) {
-						assessment.setWeight($2_QTKJGB_JWBGSFZR);//其他科级干部
+					else if(isBMFZR(user)) {
+						assessment.setWeight($2_QTKJGB_JWBGSFZR);//其他部门负责人
 						assessment.setType("A_QTKJGB_JWBGSFZR");
 					}
-					else if(isBBMQTKJYXGB(bmfzr, user)) {
-						assessment.setWeight($2_BBMQTGB_JWBGSFZR);//本部门其他科级以下干部
+					else if(isBBM(bmfzr, user)) {
+						assessment.setWeight($2_BBMQTGB_JWBGSFZR);//本部门其他干部
 						assessment.setType("A_BBMQTGB_JWBGSFZR");
 					}
 					assessment.setWeightDept($2_BMDF_JWBGSFZR);
@@ -185,11 +178,11 @@ public class UserServiceImpl implements UserService {
 						assessment.setWeight($1_QTJLD_BMFZR);
 						assessment.setType("A_QTJLD_BMFZR");
 					}
-					else if(isKJGB(user)) {
+					else if(isBMFZR(user)) {
 						assessment.setWeight($1_QTKJGB_BMFZR);
 						assessment.setType("A_QTKJGB_BMFZR");
 					}
-					else if(isBBMQTKJYXGB(bmfzr, user)) {
+					else if(isBBM(bmfzr, user)) {
 						assessment.setWeight($1_BBMQTGB_BMFZR);
 						assessment.setType("A_BBMQTGB_BMFZR");
 					}
@@ -354,41 +347,32 @@ public class UserServiceImpl implements UserService {
 	 * @param user
 	 */
 	private void generateAssessment4QTGB(User user) {
-		//科级以下干部
-		Position position_qtkjyxgb = positionRepository.findByName(KJYXGB);
-		List<User> qtkjyxgbs = findByPosition(position_qtkjyxgb);
-		Iterator<User> iterator = qtkjyxgbs.iterator();
+		//其他干部
+		Position position_qtgb = positionRepository.findByName(QTGB);
+		List<User> qtgbs = findByPosition(position_qtgb);
+		Iterator<User> iterator = qtgbs.iterator();
 		while(iterator.hasNext()) {//去除监管组干部
 			User u = iterator.next();
 			if(u.getDept().getName().contains("监管组")) iterator.remove();
 		}
-		//其他科级干部
-		Position position_qtkjgb = positionRepository.findByName(QTKJGB);
-		List<User> qtkjgbs = findByPosition(position_qtkjgb);
-		Iterator<User> iterator2 = qtkjgbs.iterator();
-		while(iterator.hasNext()) {//去除监管组干部
-			User u = iterator.next();
-			if(u.getDept().getName().contains("监管组")) iterator2.remove();
-		}
-		qtkjyxgbs.addAll(qtkjgbs);
 		
-		for(User qtkjyxgb : qtkjyxgbs) {
-			if(qtkjyxgb.getName().equals(user.getName())) continue;
-			if(isFGLD(user, qtkjyxgb) || isBMFZR(user, qtkjyxgb) || isBBMGBNotFZR(qtkjyxgb, user)) {//具有打分权限的人
+		for(User qtgb : qtgbs) {
+			if(qtgb.getName().equals(user.getName())) continue;
+			if(isFGLD(user, qtgb) || isBMFZR(user, qtgb) || isBBMGBNotFZR(qtgb, user)) {//具有打分权限的人
 				Assessment assessment = new Assessment();
 				assessment.setAssesser(user);//设置打分人
-				assessment.setUser(qtkjyxgb);//设置被考核人
+				assessment.setUser(qtgb);//设置被考核人
 				assessment.setScore(0);
-				assessment.setUserDeptId(qtkjyxgb.getDept().getId());
-				if(isFGLD(user, qtkjyxgb)) {
+				assessment.setUserDeptId(qtgb.getDept().getId());
+				if(isFGLD(user, qtgb)) {
 					assessment.setWeight($5_FGLD_QTGB);
 					assessment.setType("B_FGLD_QTGB");
 				}
-				if(isBMFZR(user, qtkjyxgb)) {
+				if(isBMFZR(user, qtgb)) {
 					assessment.setWeight($5_BMFZR_QTGB);
 					assessment.setType("B_BMFZR_QTGB");
 				}
-				if(isBBMGBNotFZR(qtkjyxgb, user)) {
+				if(isBBMGBNotFZR(qtgb, user)) {
 					assessment.setWeight($5_BBMQTGB_QTGB);
 					assessment.setType("B_BBMQTGB_QTGB");
 				}
@@ -402,37 +386,29 @@ public class UserServiceImpl implements UserService {
 	 * @param user
 	 */
 	private void generateAssessment4JGZQTGB(User user) {
-		//科级以下干部
-		Position position_qtkjyxgb = positionRepository.findByName(KJYXGB);
-		List<User> qtkjyxgbs = findByPosition(position_qtkjyxgb);
-		Iterator<User> iterator = qtkjyxgbs.iterator();
-		while(iterator.hasNext()) {//去除非监管组干部
+		
+		Position position_qtgb = positionRepository.findByName(QTGB);
+		List<User> qtgbs = findByPosition(position_qtgb);
+		Iterator<User> iterator = qtgbs.iterator();
+		while(iterator.hasNext()) {//去除监管组干部
 			User u = iterator.next();
 			if(!u.getDept().getName().contains("监管组")) iterator.remove();
 		}
-		//其他科级干部
-		Position position_qtkjgb = positionRepository.findByName(QTKJGB);
-		List<User> qtkjgbs = findByPosition(position_qtkjgb);
-		Iterator<User> iterator2 = qtkjgbs.iterator();
-		while(iterator2.hasNext()) {//去除非监管组干部
-			User u = iterator2.next();
-			if(!u.getDept().getName().contains("监管组")) iterator2.remove();
-		}
-		qtkjyxgbs.addAll(qtkjgbs);
 		
-		for(User qtkjyxgb : qtkjyxgbs) {
-			if(qtkjyxgb.getName().equals(user.getName())) continue;
-			if(isFGLD(user, qtkjyxgb) || isBMFZR(user, qtkjyxgb) || isFJDWZNBMFZR(user)) {//具有打分权限的人
+		
+		for(User qtgb : qtgbs) {
+			if(qtgb.getName().equals(user.getName())) continue;
+			if(isFGLD(user, qtgb) || isBMFZR(user, qtgb) || isFJDWZNBMFZR(user)) {//具有打分权限的人
 				Assessment assessment = new Assessment();
 				assessment.setAssesser(user);//设置打分人
-				assessment.setUser(qtkjyxgb);//设置被考核人
+				assessment.setUser(qtgb);//设置被考核人
 				assessment.setScore(0);
-				assessment.setUserDeptId(qtkjyxgb.getDept().getId());
-				if(isFGLD(user, qtkjyxgb)) {
+				assessment.setUserDeptId(qtgb.getDept().getId());
+				if(isFGLD(user, qtgb)) {
 					assessment.setWeight($6_FGLD_JGZQTGB);
 					assessment.setType("C_FGLD_JGZQTGB");
 				}
-				if(isBMFZR(user, qtkjyxgb)) {
+				if(isBMFZR(user, qtgb)) {
 					assessment.setWeight($6_BMFZR_JGZQTGB);
 					assessment.setType("C_BMFZR_JGZQTGB");
 				}
@@ -544,14 +520,21 @@ public class UserServiceImpl implements UserService {
 	@Override
 	public List<Assessment> findMyAssessmentsByType(User user, String type) {
 		List<Assessment> assessments =  assessmentRepository.findByUserAndType(user.getId(), type);
-		
 		Collections.sort(assessments, new Comparator<Assessment>() {
 			@Override
 			public int compare(Assessment o1, Assessment o2) {
-				String x1 = PinyinHelper.toHanyuPinyinStringArray(o1.getUser().getName().charAt(0))[0];
-				String x2 = PinyinHelper.toHanyuPinyinStringArray(o2.getUser().getName().charAt(0))[0];
-				System.out.println(x1+"--"+x2);
-				return x1.compareTo(x2);
+				int b1;
+				int b2;
+				try {
+					b1 = Bihua.getStrokeCount(o1.getUser().getName().charAt(0));
+					b2 = Bihua.getStrokeCount(o2.getUser().getName().charAt(0));
+					return b1-b2;
+				} catch (UnsupportedEncodingException e) {
+					e.printStackTrace();
+				}
+				return 0;
+				//String x1 = PinyinHelper.toHanyuPinyinStringArray(o1.getUser().getName().charAt(0))[0];
+				//String x2 = PinyinHelper.toHanyuPinyinStringArray(o2.getUser().getName().charAt(0))[0];
 			}
 		});
 		return assessments;
@@ -573,43 +556,25 @@ public class UserServiceImpl implements UserService {
 		if(user.getDept().getLeader()==null) return false;
 		if(user.getDept().getLeader().getName().equals(leader.getName())) return true;else return false;
 	}
-	//是否为其他局领导且不为分管领导
-	private boolean isQTJDLNotFGLD(User leader, User user) {
-		if(user.getDept().getLeader()==null) return false;
-		if(!user.getDept().getLeader().getName().equals(leader.getName()) && QTJLD.equals(leader.getPosition().getName())) return true; else return false;
-	}
 		
 	
-	//是否为科级干部
-	private boolean isKJGB(User user) {
-		if(user.getPosition().getName().equals(QTKJGB) || user.getPosition().getName().equals(BMFZR)) return true;else return false;
+	//部门负责人
+	private boolean isBMFZR(User user) {
+		if(user.getPosition().getName().equals(BMFZR)) return true;else return false;
 	}
 	
-	//是否为科级干部且不为为本部门负责人
-	private boolean isNotBBMFZR(User assesser,User user) {
-		if(assesser.getPosition().getName().equals(BMFZR) && !user.getDept().getName().equals(assesser.getDept().getName())) return true;else return false;
+	//是否为同一部门
+	private boolean isBBM(User u1,User u2) {
+		if(u1.getDept().getName().equals(u2.getDept().getName())) return true;else return false;
 	}
 	
-	//是否为其他科级干部且不是部门负责人
-	private boolean isQTKJGB(User user) {
-		if(user.getPosition().getName().equals(QTKJGB)) return true;else return false;
-	}
 	
 	//是否为部门负责人
 	private boolean isBMFZR(User charger, User user) {
 		if(charger.getPosition().getName().equals(BMFZR) && user.getDept().getName().equals(charger.getDept().getName())) return true;else return false;
 	}
 	
-	//是否为科级以下干部
-	private boolean isKJYXGB(User user) {
-		if(user.getPosition().getName().equals(KJYXGB)) return true;else return false;
-	}
 	
-	//是否为本部门其他科级以下干部
-	private boolean isBBMQTKJYXGB(User me, User other) {
-		if(other.getDept()==null) return false;
-		if(KJYXGB.equals(other.getPosition().getName()) && other.getDept().getName().equals(me.getDept().getName())) return true;else return false;
-	}
 	
 	//是否为本部门除负责人以外干部
 	private boolean isBBMGBNotFZR(User me, User other) {

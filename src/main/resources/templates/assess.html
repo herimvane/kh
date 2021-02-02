@@ -53,8 +53,8 @@
     		.navbar-brand span {
     			display: none;
     		}
-    		.navbar-brand i {
-    			font-size: 15px;
+    		.navbar-brand em {
+    			font-size: 12px;
     		}
     	}
     	
@@ -96,8 +96,6 @@
 			background-color: #293462 !important;
 			border-radius: 15px;
 			font-size: 1rem !important;
-		}
-		.mycol {
 		}
     	.progress {
                 height: 80px;
@@ -145,7 +143,7 @@
   <body style="background-color: #f3f3f4;">
   	<div>
 	  	<nav class="navbar shadow">
-		  <a class="navbar-brand"><i class="fa fa-file" aria-hidden="true"></i><span>毕节银保监分局度人事考核</span><i style="color: red;">(按姓氏字母排序)</i></a>
+		  <a class="navbar-brand"><i class="fa fa-file" aria-hidden="true"></i><span>毕节银保监分局度人事考核</span><i style="color: red;"></i><em>(按姓氏笔画排序)</em></a>
 		  <div class="navbar-user dropdown">
 			  <a class="dropdown-toggle" id="userdrop" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"><span th:text="${session.user.name}"></span><i class="fa fa-user" aria-hidden="true"></i>
 			  </a>
@@ -321,6 +319,14 @@
 		        	  var thisOldScore = $(this).find("input[type='hidden']").get(0).value;
 		        	  if(thisOldScore!=4 && score==4) inputs4+=1;
 		        	  if(thisOldScore==4 && score!=4) inputs4-=1;
+		        	  
+		        	  if(type=="a") {//单独控制主要负责人
+		        		  if(inputs4 > 3) {
+			        		  alert("当前优秀人数不能超过：" + 3 + "个。");
+			        		  ratythis.raty('score',thisOldScore);//解决移动端return false后不能还原的问题
+			        		  return false;
+			        	  }
+		        	  }
 		        	  if(inputs4 > ratio) {
 		        		  alert("当前优秀人数不能超过：" + ratio + "个。");
 		        		  ratythis.raty('score',thisOldScore);//解决移动端return false后不能还原的问题

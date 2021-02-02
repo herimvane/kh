@@ -4,6 +4,8 @@ import org.apache.shiro.crypto.hash.SimpleHash;
 import org.apache.shiro.util.ByteSource;
 import org.junit.jupiter.api.Test;
 
+import com.herim.kh.utils.Bihua;
+
 class KhApplicationTests {
 	
 	
@@ -21,7 +23,7 @@ class KhApplicationTests {
         //将得到的result放到数据库中就行了。
         String result = new SimpleHash(hashAlgorithmName, pwd, ByteSource.Util.bytes(salt), hashInteractions).toHex();
         System.out.println(result);
-        System.out.println("好".codePointAt(0));
+        System.out.println(Bihua.getStrokeCount('文'));
 	}
 	
 

@@ -22,6 +22,6 @@ public class DeptServiceImpl implements DeptService {
 	
 	@Override
 	public List<Dept> findAllDepts() {
-		return deptRepository.findAll();
+		return deptRepository.getByOrderByMyorder();
 	}
 }
