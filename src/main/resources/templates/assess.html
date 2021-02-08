@@ -193,7 +193,7 @@
 			    <div class="card-header" id="headingCharge">
 			      <h2 class="mb-0">
 			        <button class="btn btn-link" type="button" data-toggle="collapse" data-target="#collapseCharge" aria-expanded="true" aria-controls="collapseCharge">
-			          部门主要负责人考核<span style="color: #ccff33;font-size: 15px;">(优秀可选3人)</span><i class="fa fa-chevron-down" aria-hidden="true"></i>
+			          部门主要负责人考核<span th:if="${session.user.position.name !='其他干部'}" style="color: #ccff33;font-size: 15px;">(优秀可选2人)</span><i class="fa fa-chevron-down" aria-hidden="true"></i>
 			        </button>
 			      </h2>
 			    </div>
@@ -321,8 +321,8 @@
 		        	  if(thisOldScore==4 && score!=4) inputs4-=1;
 		        	  
 		        	  if(type=="a") {//单独控制主要负责人
-		        		  if(inputs4 > 3) {
-			        		  alert("当前优秀人数不能超过：" + 3 + "个。");
+		        		  if(inputs4 > 2) {
+			        		  alert("当前优秀人数不能超过：" + 2 + "个。");
 			        		  ratythis.raty('score',thisOldScore);//解决移动端return false后不能还原的问题
 			        		  return false;
 			        	  }
