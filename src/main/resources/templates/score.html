@@ -66,10 +66,9 @@
   <body style="background-color: #f3f3f4;">
   	<div>
 	  	<nav class="navbar shadow">
-		  <a class="navbar-brand"><i class="fa fa-file" aria-hidden="true"></i><span>毕节银保监分局2020年度人事考核</span></a>
-		  <div class="navbar-user dropdown">
-			  <a><i class="fa fa-user" aria-hidden="true"></i>
-			  </a>
+		  <a class="navbar-brand"><i class="fa fa-file" aria-hidden="true"></i><span>毕节银保监分局年度人事考核</span></a>
+		  <div class="navbar-user">
+			  <a href="/admin/export-score"><i id="export" class="fa fa-download" aria-hidden="true"></i></a>
 		  </div>
 		</nav>
 		<div class="container">
@@ -83,7 +82,7 @@
 			    </tr>
 			  </thead>
 			  <tbody>
-			    <tr th:each="userScore : ${userScores}">
+			    <tr th:each="userScore: ${userScores}" th:classappend="${userScore.user.position.name=='其他干部' ? 'table-info':'table-warning'}">
 			      <td scope="row" th:text="${userScore.user.name}"></td>
 			      <td th:text="${userScore.user.dept.name}"></td>
 			      <td th:text="${userScore.finalScore}"></td>
@@ -106,7 +105,9 @@
 			   path: '.pagination__next',
 			   append: '.post',
 			   history: false,
-			 });  */ 
+			 });  */
+			 
+			
 	   });
 	</script>
   </body>

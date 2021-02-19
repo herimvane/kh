@@ -7,5 +7,6 @@ public interface OperationService {
 	void save(Operation operation);
 	Boolean haveOperation(String name, Integer status);
 	void update(String name, Integer status);
+	Operation getByName(String name);
 
 }

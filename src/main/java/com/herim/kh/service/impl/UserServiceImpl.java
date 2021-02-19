@@ -18,17 +18,18 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.herim.kh.dao.AssessmentRepository;
+import com.herim.kh.dao.MyConfigRepository;
 import com.herim.kh.dao.PositionRepository;
 import com.herim.kh.dao.UserRepository;
 import com.herim.kh.domain.Assessment;
+import com.herim.kh.domain.MyConfig;
 import com.herim.kh.domain.Position;
 import com.herim.kh.domain.User;
 import com.herim.kh.domain.UserScore;
 import com.herim.kh.exceptionhandler.MyException;
+import com.herim.kh.service.MyConfigService;
 import com.herim.kh.service.UserService;
 import com.herim.kh.utils.Bihua;
-
-import net.sourceforge.pinyin4j.PinyinHelper;
 
 @Service
 public class UserServiceImpl implements UserService {
@@ -42,6 +43,8 @@ public class UserServiceImpl implements UserService {
 	@Autowired
 	private AssessmentRepository assessmentRepository;
 	
+	@Autowired
+	private MyConfigRepository myConfigRepository;
 	
 	
 	private static final String JZ = "局长";
@@ -488,21 +491,33 @@ public class UserServiceImpl implements UserService {
 				us.setFinalScore(obj.getFinalscore()+sjdf*$2_SJJWBGJ_JWBGSFZR);
 			}
 			//部门只有一个负责人
-			if("李继明".equals(user.getName()) || "黄山".equals(user.getName()) || "邓学刚".equals(user.getName()) ) {
-				us.setFinalScore(obj.getFinalscore()+95*0.2);
+			List<MyConfig> singleBMFZRs = myConfigRepository.findByKey("single-bmfzr");
+			for(MyConfig config : singleBMFZRs) {
+				if(user.getName().equals(config.getValue())) {
+					us.setFinalScore(obj.getFinalscore()+95*0.2);
+				}
 			}
+			//if("李继明".equals(user.getName()) || "黄山".equals(user.getName()) || "邓学刚".equals(user.getName()) || "李继荣".equals(user.getName())) {
+			//	us.setFinalScore(obj.getFinalscore()+95*0.2);
+			//}
 			//部门只有一个其他干部
 			/*if("杨杰".equals(user.getName()) || "杨波".equals(user.getName()) || "张洪".equals(user.getName()) ||"赵二佳".equals(user.getName())) {
 				us.setFinalScore(obj.getFinalscore()+95*0.3);
 			}*/
+			us.setFinalScore((double)Math.round(us.getFinalScore()*100)/100);
 			userScores.add(us);
 		}
 		Collections.sort(userScores, new Comparator<UserScore>() {
 			@Override
 			public int compare(UserScore o1, UserScore o2) {
+				return o1.getUser().getPosition().getName().compareTo(o2.getUser().getPosition().getName());
+			}
+		}.thenComparing(new Comparator<UserScore>() {
+			@Override
+			public int compare(UserScore o1, UserScore o2) {
 				return (int) (o2.getFinalScore()-o1.getFinalScore());
 			}
-		});
+		}));
 		return userScores;
 	}
 	

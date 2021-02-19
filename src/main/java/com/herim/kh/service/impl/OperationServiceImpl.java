@@ -18,6 +18,12 @@ public class OperationServiceImpl implements OperationService {
 	public Boolean haveOperation(String name, Integer status) {
 		return operationRepository.findByNameAndStatus(name,status) == null ? false : true;
 	}
+	
+	@Override
+	public Operation getByName(String name) {
+		return operationRepository.findByName(name);
+	}
+	
 	@Transactional
 	@Override
 	public void update(String name, Integer status) {
