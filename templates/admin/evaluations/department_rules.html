@@ -1,0 +1,105 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}{{ evaluation.name }}{% endblock %}
+{% block page_hint %}维护部门考核规则；评分选项和数量限制单独设置。{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">部门评分选项</h2>
+    <a class="btn" href="/admin/score-options">管理选项库</a>
+  </div>
+  <form method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-options">
+    <div class="grid grid-2">
+      {% for option in score_options %}
+      <label class="radio-option"><input type="checkbox" name="option_ids" value="{{ option.id }}" {% if option.id in department_option_ids %}checked{% endif %}>{{ option.name }}（{{ option.value }}）</label>
+      {% else %}<div class="empty">请先在评分选项管理中创建选项。</div>{% endfor %}
+    </div>
+    <div class="modal-actions"><button class="btn btn-primary" type="submit">保存部门评分选项</button></div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">部门评分限制</h2>
+    <button class="btn btn-primary" type="button" data-dialog-target="department-limit-create" {% if not department_options %}disabled title="请先勾选并保存部门评分选项"{% endif %}>新增评分限制</button>
+  </div>
+  {% if not department_options %}
+  <div class="notice muted">请先在“部门评分选项”中勾选并保存可用评分项，再设置数量限制。</div>
+  {% endif %}
+  <div class="table-wrap"><table><thead><tr><th>评分项</th><th>最多数量</th><th>操作</th></tr></thead><tbody>
+    {% for limit in department_limit_rows %}
+    <tr>
+      <td>{{ limit.option.name }}（{{ limit.option.value }}）</td>
+      <td>{{ limit.max_count if limit.max_count is not none else '不限制' }}</td>
+      <td class="table-links"><a href="#" data-dialog-target="department-limit-edit-{{ limit.id }}">修改</a><form method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-limits/{{ limit.id }}/delete"><button class="link-danger" type="submit">删除</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="3" class="empty">暂无部门评分限制；未设置时不限制数量。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<dialog class="modal" id="department-limit-create">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-limits">
+    <div class="modal-head"><h2>新增部门评分限制</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>评分项</label><select name="score_option_id" required>{% for option in department_options %}<option value="{{ option.id }}">{{ option.name }}（{{ option.value }}）</option>{% endfor %}</select></div>
+    <div class="field"><label>最多数量</label><input name="max_count" type="number" min="0" placeholder="不限制"></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+
+{% for limit in department_limit_rows %}
+<dialog class="modal" id="department-limit-edit-{{ limit.id }}">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-limits/{{ limit.id }}/update">
+    <div class="modal-head"><h2>修改部门评分限制</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>评分项</label><select name="score_option_id" required>{% for option in department_options %}<option value="{{ option.id }}" {% if limit.score_option_id == option.id %}selected{% endif %}>{{ option.name }}（{{ option.value }}）</option>{% endfor %}</select></div>
+    <div class="field"><label>最多数量</label><input name="max_count" type="number" min="0" placeholder="不限制" value="{{ limit.max_count if limit.max_count is not none else '' }}"></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% endfor %}
+
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">部门考核规则</h2>
+    <div class="table-tools">
+      <a class="btn" href="/admin/evaluations">返回考核管理</a>
+      <button class="btn btn-primary" type="button" data-dialog-target="department-rule-create">新增部门考核规则</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>规则</th><th>权重</th><th>操作</th></tr></thead><tbody>
+    {% for r in department_rules %}
+    <tr>
+      <td>{{ r.reviewer_position.name }} 评价 {{ r.target_department_label }} 部门</td>
+      <td>{{ r.weight }}</td>
+      <td class="table-links"><a href="#" data-dialog-target="department-rule-edit-{{ r.id }}">修改</a><form method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department/{{ r.id }}/delete"><button class="link-danger" type="submit">删除</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="3" class="empty">暂无部门考核规则。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<dialog class="modal modal-wide" id="department-rule-create">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-rules">
+    <div class="modal-head"><h2>新增部门考核规则</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>评分人职位</label><select name="reviewer_position_id">{% for p in positions %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div>
+    <div class="field">
+      <label>被评部门（可多选）</label>
+      <div class="checkbox-list">{% for d in departments %}<div class="checkbox-field dept-depth-{{ d.depth }}" data-department-row data-department-id="{{ d.id }}" data-parent-id="{{ d.parent_id or '' }}">{% if d.has_children %}<button class="tree-toggle" type="button" data-tree-toggle aria-label="收起{{ d.name }}" aria-expanded="true">-</button>{% else %}<input class="tree-checkbox" type="checkbox" name="target_department_ids" value="{{ d.id }}" data-department-id="{{ d.id }}" data-parent-id="{{ d.parent_id or '' }}" aria-label="选择{{ d.name }}">{% endif %}{% if d.has_children %}<button class="tree-label" type="button" data-tree-toggle-label>{{ d.name }}</button><button class="tree-child-action" type="button" data-select-descendants>选下级</button>{% else %}<span class="tree-label-text">{{ d.name }}</span>{% endif %}</div>{% endfor %}</div>
+    </div>
+    <div class="field"><label>权重</label><input name="weight" type="number" step="0.01" min="0" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+
+{% for r in department_rules %}
+<dialog class="modal modal-wide" id="department-rule-edit-{{ r.id }}">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-rules/{{ r.id }}/update">
+    <div class="modal-head"><h2>修改部门考核规则</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>评分人职位</label><select name="reviewer_position_id">{% for p in positions %}<option value="{{ p.id }}" {% if r.reviewer_position_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></div>
+    <div class="field">
+      <label>被评部门（可多选）</label>
+      <div class="checkbox-list">{% for d in departments %}<div class="checkbox-field dept-depth-{{ d.depth }}" data-department-row data-department-id="{{ d.id }}" data-parent-id="{{ d.parent_id or '' }}">{% if d.has_children %}<button class="tree-toggle" type="button" data-tree-toggle aria-label="收起{{ d.name }}" aria-expanded="true">-</button>{% else %}<input class="tree-checkbox" type="checkbox" name="target_department_ids" value="{{ d.id }}" data-department-id="{{ d.id }}" data-parent-id="{{ d.parent_id or '' }}" aria-label="选择{{ d.name }}" {% if r.target_department_id == d.id %}checked{% endif %}>{% endif %}{% if d.has_children %}<button class="tree-label" type="button" data-tree-toggle-label>{{ d.name }}</button><button class="tree-child-action" type="button" data-select-descendants>选下级</button>{% else %}<span class="tree-label-text">{{ d.name }}</span>{% endif %}</div>{% endfor %}</div>
+    </div>
+    <div class="field"><label>权重</label><input name="weight" type="number" step="0.01" min="0" value="{{ r.weight }}" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% endfor %}
+{% endblock %}

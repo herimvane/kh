@@ -1,0 +1,81 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}人员管理{% endblock %}
+{% block page_hint %}维护账号、部门和职位。普通人员每人只能归属一个部门和一个职位。{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">人员列表</h2>
+    <div class="table-tools">
+      <form class="search-form" method="get" action="/admin/users">
+        <input name="q" value="{{ q }}" placeholder="搜索用户名或姓名">
+        <button class="btn" type="submit">搜索</button>
+        {% if q %}<a class="text-link" href="/admin/users">清除</a>{% endif %}
+      </form>
+      <button class="btn btn-primary" type="button" data-dialog-target="user-create">新增人员</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>部门</th><th>职位</th><th>状态</th><th>操作</th></tr></thead><tbody>
+  {% for item in users %}
+  <tr>
+      <td>{{ item.username }}</td>
+      <td>{{ item.full_name }}</td>
+      <td>{{ "管理员" if item.role == "admin" else "普通用户" }}</td>
+      <td>{{ item.department_name or "未设置" }}</td>
+      <td>{{ item.position_name or "未设置" }}</td>
+      <td>{% if item.is_active %}<span class="badge badge-success">启用</span>{% else %}<span class="badge badge-danger">停用</span>{% endif %}</td>
+      <td class="table-links">
+        <a href="#" data-dialog-target="user-edit-{{ item.id }}">修改</a>
+        <form method="post" action="/admin/users/{{ item.id }}/delete"><button class="link-danger" type="submit">删除</button></form>
+      </td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="empty">暂无人员。</td></tr>{% endfor %}
+  </tbody></table></div>
+  <div class="pagination">
+    <div class="pagination-summary">共 {{ total_users }} 人，每页 {{ page_size }} 人</div>
+    <div class="pagination-actions">
+      {% if page > 1 %}
+      <a class="pagination-link" href="/admin/users?page={{ page - 1 }}{% if q %}&q={{ q }}{% endif %}">上一页</a>
+      {% else %}
+      <span class="pagination-link is-disabled">上一页</span>
+      {% endif %}
+      <span class="pagination-current">第 {{ page }} / {{ total_pages }} 页</span>
+      {% if page < total_pages %}
+      <a class="pagination-link" href="/admin/users?page={{ page + 1 }}{% if q %}&q={{ q }}{% endif %}">下一页</a>
+      {% else %}
+      <span class="pagination-link is-disabled">下一页</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+<dialog class="modal modal-wide" id="user-create">
+  <form class="modal-card" method="post" action="/admin/users">
+    <div class="modal-head"><h2>新增人员</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="modal-grid">
+      <div class="field"><label>用户名</label><input name="username" required></div>
+      <div class="field"><label>姓名</label><input name="full_name" required></div>
+      <div class="field"><label>初始密码</label><input name="password" value="123456"></div>
+      <div class="field"><label>角色</label><select name="role"><option value="user">普通用户</option><option value="admin">管理员</option></select></div>
+      <div class="field"><label>部门</label><select name="department_id"><option value="">无</option>{% for d in departments %}<option value="{{ d.id }}">{{ d.name }}</option>{% endfor %}</select></div>
+      <div class="field"><label>职位</label><select name="position_id"><option value="">无</option>{% for p in positions %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div>
+    </div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% for item in users %}
+<dialog class="modal modal-wide" id="user-edit-{{ item.id }}">
+  <form class="modal-card" method="post" action="/admin/users/{{ item.id }}/update">
+    <div class="modal-head"><h2>修改人员</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="modal-grid">
+      <div class="field"><label>用户名</label><input name="username" value="{{ item.username }}" required></div>
+      <div class="field"><label>姓名</label><input name="full_name" value="{{ item.full_name }}" required></div>
+      <div class="field"><label>角色</label><select name="role"><option value="user" {% if item.role == 'user' %}selected{% endif %}>普通用户</option><option value="admin" {% if item.role == 'admin' %}selected{% endif %}>管理员</option></select></div>
+      <div class="field"><label>部门</label><select name="department_id"><option value="">无</option>{% for d in departments %}<option value="{{ d.id }}" {% if item.department_id == d.id %}selected{% endif %}>{{ d.name }}</option>{% endfor %}</select></div>
+      <div class="field"><label>职位</label><select name="position_id"><option value="">无</option>{% for p in positions %}<option value="{{ p.id }}" {% if item.position_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></div>
+      <div class="field"><label>新密码</label><input name="password" placeholder="留空不修改"></div>
+      <label class="checkbox-field"><input type="checkbox" name="is_active" {% if item.is_active %}checked{% endif %}>启用账号</label>
+    </div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,57 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}{{ evaluation.year }} 年考核详情{% endblock %}
+{% block page_hint %}查看人员和部门归档分数，以及评分明细快照。{% endblock %}
+{% block content %}
+<section class="panel">
+  <form class="form-row" method="get">
+    <div class="field"><label>筛选</label><input name="q" value="{{ q }}" placeholder="姓名、部门或职位"></div>
+    <button class="btn btn-primary" type="submit">查询</button>
+  </form>
+</section>
+<section class="grid grid-2">
+  <div class="panel"><h2 class="panel-title">人员得分</h2><div class="table-wrap"><table><thead><tr><th>姓名</th><th>部门</th><th>职位</th><th>得分</th></tr></thead><tbody>
+  {% for p in people %}<tr><td>{{ p.full_name }}</td><td>{{ p.department_name }}</td><td>{{ p.position_name }}</td><td>{{ "%.2f"|format(p.final_score) }}</td></tr>{% else %}<tr><td colspan="4" class="empty">暂无归档人员得分。</td></tr>{% endfor %}
+  </tbody></table></div>
+  <div class="pagination">
+    <div class="pagination-summary">共 {{ people_pagination.total }} 条，每页 {{ people_pagination.page_size }} 条</div>
+    <div class="pagination-actions">
+      {% if people_pagination.page > 1 %}
+      <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/details?people_page={{ people_pagination.page - 1 }}&details_page={{ details_pagination.page }}{{ q_query }}">上一页</a>
+      {% else %}
+      <span class="pagination-link is-disabled">上一页</span>
+      {% endif %}
+      <span class="pagination-current">第 {{ people_pagination.page }} / {{ people_pagination.total_pages }} 页</span>
+      {% if people_pagination.page < people_pagination.total_pages %}
+      <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/details?people_page={{ people_pagination.page + 1 }}&details_page={{ details_pagination.page }}{{ q_query }}">下一页</a>
+      {% else %}
+      <span class="pagination-link is-disabled">下一页</span>
+      {% endif %}
+    </div>
+  </div></div>
+  <div class="panel"><h2 class="panel-title">部门得分</h2><div class="table-wrap"><table><thead><tr><th>部门</th><th>得分</th></tr></thead><tbody>
+  {% for d in departments %}<tr><td>{{ d.department_name }}</td><td>{{ "%.2f"|format(d.final_score) }}</td></tr>{% else %}<tr><td colspan="2" class="empty">暂无归档部门得分。</td></tr>{% endfor %}
+  </tbody></table></div></div>
+</section>
+<section class="panel"><h2 class="panel-title">归档规则快照</h2><div class="table-wrap"><table><thead><tr><th>快照类型</th><th>内容摘要</th></tr></thead><tbody>
+  {% for item in snapshots %}<tr><td>{{ item.title }}</td><td>{{ snapshot_preview(item.payload) }}</td></tr>{% else %}<tr><td colspan="2" class="empty">暂无归档规则快照。</td></tr>{% endfor %}
+  </tbody></table></div></section>
+<section class="panel"><h2 class="panel-title">评分明细快照</h2><div class="table-wrap"><table><thead><tr><th>评分人</th><th>对象</th><th>类型</th><th>选项</th><th>分值</th><th>权重</th><th>加权分</th><th>规则</th></tr></thead><tbody>
+{% for d in details %}<tr><td>{{ d.reviewer_name }}</td><td>{{ d.target_name }}</td><td>{{ "人员" if d.task_type == "person" else "部门" }}</td><td>{{ d.option_name }}</td><td>{{ d.score_value }}</td><td>{{ d.weight }}</td><td>{{ "%.2f"|format(d.weighted_score) }}</td><td>{{ d.rule_label }}</td></tr>{% else %}<tr><td colspan="8" class="empty">暂无评分明细。</td></tr>{% endfor %}
+</tbody></table></div>
+<div class="pagination">
+  <div class="pagination-summary">共 {{ details_pagination.total }} 条，每页 {{ details_pagination.page_size }} 条</div>
+  <div class="pagination-actions">
+    {% if details_pagination.page > 1 %}
+    <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/details?people_page={{ people_pagination.page }}&details_page={{ details_pagination.page - 1 }}{{ q_query }}">上一页</a>
+    {% else %}
+    <span class="pagination-link is-disabled">上一页</span>
+    {% endif %}
+    <span class="pagination-current">第 {{ details_pagination.page }} / {{ details_pagination.total_pages }} 页</span>
+    {% if details_pagination.page < details_pagination.total_pages %}
+    <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/details?people_page={{ people_pagination.page }}&details_page={{ details_pagination.page + 1 }}{{ q_query }}">下一页</a>
+    {% else %}
+    <span class="pagination-link is-disabled">下一页</span>
+    {% endif %}
+  </div>
+</div></section>
+{% endblock %}

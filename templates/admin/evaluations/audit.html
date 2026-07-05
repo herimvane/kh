@@ -1,0 +1,49 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}操作审计{% endblock %}
+{% block page_hint %}汇总最近 3 个考核年度的关键后台操作。{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">审计记录</h2>
+    <div class="actions">
+      <a class="btn" href="/admin/evaluations">返回考核管理</a>
+      <a class="btn btn-primary" href="/admin/evaluations/audit?page={{ pagination.page }}{{ q_query }}">刷新</a>
+    </div>
+  </div>
+  <form class="form-row" method="get">
+    <div class="field"><label>筛选</label><input name="q" value="{{ q }}" placeholder="考核、操作人、操作或说明"></div>
+    <button class="btn btn-primary" type="submit">查询</button>
+    {% if q %}<a class="btn" href="/admin/evaluations/audit">清除</a>{% endif %}
+  </form>
+  <div class="muted">当前显示 {{ start_year }} 年以来的考核审计。</div>
+</section>
+<section class="panel">
+  <div class="table-wrap"><table><thead><tr><th>时间</th><th>考核</th><th>操作人</th><th>操作</th><th>说明</th></tr></thead><tbody>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.EvaluationAuditLog.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+    <td>{{ row.evaluation_name }}（{{ row.evaluation_year }}）</td>
+    <td>{{ row.EvaluationAuditLog.actor_name }}</td>
+    <td>{{ row.EvaluationAuditLog.action }}</td>
+    <td>{{ row.EvaluationAuditLog.detail }}</td>
+  </tr>
+  {% else %}<tr><td colspan="5" class="empty">暂无操作审计。</td></tr>{% endfor %}
+  </tbody></table></div>
+  <div class="pagination">
+    <div class="pagination-summary">共 {{ pagination.total }} 条，每页 {{ pagination.page_size }} 条</div>
+    <div class="pagination-actions">
+      {% if pagination.page > 1 %}
+      <a class="pagination-link" href="/admin/evaluations/audit?page={{ pagination.page - 1 }}{{ q_query }}">上一页</a>
+      {% else %}
+      <span class="pagination-link is-disabled">上一页</span>
+      {% endif %}
+      <span class="pagination-current">第 {{ pagination.page }} / {{ pagination.total_pages }} 页</span>
+      {% if pagination.page < pagination.total_pages %}
+      <a class="pagination-link" href="/admin/evaluations/audit?page={{ pagination.page + 1 }}{{ q_query }}">下一页</a>
+      {% else %}
+      <span class="pagination-link is-disabled">下一页</span>
+      {% endif %}
+    </div>
+  </div>
+</section>
+{% endblock %}

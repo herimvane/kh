@@ -1,0 +1,79 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}{{ evaluation.name }}{% endblock %}
+{% block page_hint %}设置哪些职位按所在部门得分折算加分；手动部门得分单独维护。{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">部门得分占比规则</h2>
+    <div class="table-tools">
+      <a class="btn" href="/admin/evaluations">返回考核管理</a>
+      <button class="btn btn-primary" type="button" data-dialog-target="share-rule-create">新增占比规则</button>
+    </div>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>适用人员职位</th><th>权重</th><th>操作</th></tr></thead><tbody>
+    {% for r in share_rules %}
+    <tr>
+      <td>{{ r.target_position.name }}</td>
+      <td>{{ r.weight }}</td>
+      <td class="table-links"><a href="#" data-dialog-target="share-rule-edit-{{ r.id }}">修改</a><form method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-share-rules/{{ r.id }}/delete"><button class="link-danger" type="submit">删除</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="3" class="empty">暂无部门得分占比规则。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">手动部门得分</h2>
+    <button class="btn btn-primary" type="button" data-dialog-target="manual-score-create">新增手动部门得分</button>
+  </div>
+  <div class="table-wrap"><table><thead><tr><th>部门</th><th>得分</th><th>操作</th></tr></thead><tbody>
+    {% for item in manual_scores %}
+    <tr>
+      <td>{{ item.department.name }}</td>
+      <td>{{ item.score }}</td>
+      <td class="table-links"><a href="#" data-dialog-target="manual-score-edit-{{ item.id }}">修改</a><form method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/manual-department-scores/{{ item.id }}/delete"><button class="link-danger" type="submit">删除</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="3" class="empty">暂无手动部门得分；未设置时使用部门考核得分。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+<dialog class="modal" id="share-rule-create">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-share-rules">
+    <div class="modal-head"><h2>新增部门得分占比规则</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>适用人员职位</label><select name="target_position_id" required>{% for p in positions %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div>
+    <div class="field"><label>权重</label><input name="weight" type="number" step="0.01" min="0" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+
+<dialog class="modal" id="manual-score-create">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/manual-department-scores">
+    <div class="modal-head"><h2>新增手动部门得分</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>部门</label><select name="department_id" required>{% for d in departments %}<option value="{{ d.id }}">{{ d.display_name }}</option>{% endfor %}</select></div>
+    <div class="field"><label>得分</label><input name="score" type="number" step="0.01" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+
+{% for r in share_rules %}
+<dialog class="modal" id="share-rule-edit-{{ r.id }}">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/department-share-rules/{{ r.id }}/update">
+    <div class="modal-head"><h2>修改部门得分占比规则</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>适用人员职位</label><select name="target_position_id" required>{% for p in positions %}<option value="{{ p.id }}" {% if r.target_position_id == p.id %}selected{% endif %}>{{ p.name }}</option>{% endfor %}</select></div>
+    <div class="field"><label>权重</label><input name="weight" type="number" step="0.01" min="0" value="{{ r.weight }}" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% endfor %}
+
+{% for item in manual_scores %}
+<dialog class="modal" id="manual-score-edit-{{ item.id }}">
+  <form class="modal-card" method="post" action="/admin/evaluations/{{ evaluation.id }}/settings/manual-department-scores/{{ item.id }}/update">
+    <div class="modal-head"><h2>修改手动部门得分</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>部门</label><select name="department_id" required>{% for d in departments %}<option value="{{ d.id }}" {% if item.department_id == d.id %}selected{% endif %}>{{ d.display_name }}</option>{% endfor %}</select></div>
+    <div class="field"><label>得分</label><input name="score" type="number" step="0.01" value="{{ item.score }}" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% endfor %}
+{% endblock %}

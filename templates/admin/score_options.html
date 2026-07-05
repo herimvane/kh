@@ -1,0 +1,30 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}评分选项{% endblock %}
+{% block page_hint %}设置前台评分可选项；人数限制在具体考核规则中配置。{% endblock %}
+{% block content %}
+<section class="panel">
+<div class="table-head"><h2 class="panel-title">评分选项列表</h2><button class="btn btn-primary" type="button" data-dialog-target="score-option-create">新增选项</button></div>
+<div class="table-wrap"><table><thead><tr><th>选项</th><th>分值</th><th>操作</th></tr></thead><tbody>
+{% for option in options %}
+<tr><td>{{ option.name }}</td><td>{{ option.value }}</td><td class="table-links"><a href="#" data-dialog-target="score-option-edit-{{ option.id }}">修改</a><form method="post" action="/admin/score-options/{{ option.id }}/delete"><button class="link-danger" type="submit">删除</button></form></td></tr>
+{% else %}<tr><td colspan="3" class="empty">暂无评分选项。</td></tr>{% endfor %}
+</tbody></table></div></section>
+<dialog class="modal" id="score-option-create">
+  <form class="modal-card" method="post" action="/admin/score-options">
+    <div class="modal-head"><h2>新增评分选项</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>选项名称</label><input name="name" placeholder="优秀" required></div>
+    <div class="field"><label>分值</label><input name="value" type="number" step="0.01" placeholder="95" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% for option in options %}
+<dialog class="modal" id="score-option-edit-{{ option.id }}">
+  <form class="modal-card" method="post" action="/admin/score-options/{{ option.id }}/update">
+    <div class="modal-head"><h2>修改评分选项</h2><button type="button" data-dialog-close>×</button></div>
+    <div class="field"><label>选项名称</label><input name="name" value="{{ option.name }}" required></div>
+    <div class="field"><label>分值</label><input name="value" type="number" step="0.01" value="{{ option.value }}" required></div>
+    <div class="modal-actions"><button class="btn" type="button" data-dialog-close>取消</button><button class="btn btn-primary" type="submit">保存</button></div>
+  </form>
+</dialog>
+{% endfor %}
+{% endblock %}

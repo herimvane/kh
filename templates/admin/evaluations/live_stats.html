@@ -1,0 +1,79 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}{{ evaluation.year }} 年实时统计{% endblock %}
+{% block page_hint %}根据当前已提交评分实时计算；未归档前仅供过程查看，最终结果以归档快照为准。{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">实时进度</h2>
+    <div class="actions">
+      <a class="btn" href="/admin/evaluations">返回考核管理</a>
+      <a class="btn btn-primary" href="/admin/evaluations/{{ evaluation.id }}/live-stats{% if q %}?q={{ q }}{% endif %}">刷新实时统计</a>
+    </div>
+  </div>
+  <div class="stats-grid">
+    <div class="stat"><div><div class="stat-label">评分任务</div><div class="stat-value">{{ stats.submitted_tasks }} / {{ stats.total_tasks }}</div><div class="stat-sub">已提交 / 总任务</div></div></div>
+    <div class="stat"><div><div class="stat-label">评分人员</div><div class="stat-value">{{ stats.submitted_reviewers }} / {{ stats.total_reviewers }}</div><div class="stat-sub">已提交 / 应提交</div></div></div>
+    <div class="stat"><div><div class="stat-label">人员得分</div><div class="stat-value">{{ people_pagination.total }}</div><div class="stat-sub">已有当前分</div></div></div>
+    <div class="stat"><div><div class="stat-label">部门得分</div><div class="stat-value">{{ departments | length }}</div><div class="stat-sub">含手动部门得分</div></div></div>
+  </div>
+</section>
+<section class="panel">
+  <form class="form-row" method="get">
+    <div class="field"><label>筛选</label><input name="q" value="{{ q }}" placeholder="姓名、部门、职位或规则"></div>
+    <button class="btn btn-primary" type="submit">查询</button>
+    {% if q %}<a class="btn" href="/admin/evaluations/{{ evaluation.id }}/live-stats">清除</a>{% endif %}
+  </form>
+</section>
+<section class="grid grid-2">
+  <div class="panel">
+	    <h2 class="panel-title">人员当前得分</h2>
+	    <div class="table-wrap"><table><thead><tr><th>姓名</th><th>部门</th><th>职位</th><th>当前得分</th></tr></thead><tbody>
+	    {% for p in people %}<tr><td>{{ p.full_name }}</td><td>{{ p.department_name }}</td><td>{{ p.position_name }}</td><td>{{ "%.2f"|format(p.final_score) }}</td></tr>{% else %}<tr><td colspan="4" class="empty">暂无人员当前得分。</td></tr>{% endfor %}
+	    </tbody></table></div>
+	    <div class="pagination">
+	      <div class="pagination-summary">共 {{ people_pagination.total }} 条，每页 {{ people_pagination.page_size }} 条</div>
+	      <div class="pagination-actions">
+	        {% if people_pagination.page > 1 %}
+	        <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/live-stats?people_page={{ people_pagination.page - 1 }}&details_page={{ details_pagination.page }}{{ q_query }}">上一页</a>
+	        {% else %}
+	        <span class="pagination-link is-disabled">上一页</span>
+	        {% endif %}
+	        <span class="pagination-current">第 {{ people_pagination.page }} / {{ people_pagination.total_pages }} 页</span>
+	        {% if people_pagination.page < people_pagination.total_pages %}
+	        <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/live-stats?people_page={{ people_pagination.page + 1 }}&details_page={{ details_pagination.page }}{{ q_query }}">下一页</a>
+	        {% else %}
+	        <span class="pagination-link is-disabled">下一页</span>
+	        {% endif %}
+	      </div>
+	    </div>
+	  </div>
+  <div class="panel">
+    <h2 class="panel-title">部门当前得分</h2>
+    <div class="table-wrap"><table><thead><tr><th>部门</th><th>当前得分</th></tr></thead><tbody>
+    {% for d in departments %}<tr><td>{{ d.department_name }}</td><td>{{ "%.2f"|format(d.final_score) }}</td></tr>{% else %}<tr><td colspan="2" class="empty">暂无部门当前得分。</td></tr>{% endfor %}
+    </tbody></table></div>
+  </div>
+</section>
+<section class="panel">
+	  <h2 class="panel-title">最近评分明细</h2>
+	  <div class="table-wrap"><table><thead><tr><th>评分人</th><th>对象</th><th>类型</th><th>选项</th><th>分值</th><th>权重</th><th>加权分</th><th>规则</th></tr></thead><tbody>
+	  {% for d in details %}<tr><td>{{ d.reviewer_name }}</td><td>{{ d.target_name }}</td><td>{{ "人员" if d.task_type == "person" else "部门" }}</td><td>{{ d.option_name }}</td><td>{{ d.score_value }}</td><td>{{ d.weight }}</td><td>{{ "%.2f"|format(d.weighted_score) }}</td><td>{{ d.rule_label }}</td></tr>{% else %}<tr><td colspan="8" class="empty">暂无评分明细。</td></tr>{% endfor %}
+	  </tbody></table></div>
+	  <div class="pagination">
+	    <div class="pagination-summary">共 {{ details_pagination.total }} 条，每页 {{ details_pagination.page_size }} 条</div>
+	    <div class="pagination-actions">
+	      {% if details_pagination.page > 1 %}
+	      <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/live-stats?people_page={{ people_pagination.page }}&details_page={{ details_pagination.page - 1 }}{{ q_query }}">上一页</a>
+	      {% else %}
+	      <span class="pagination-link is-disabled">上一页</span>
+	      {% endif %}
+	      <span class="pagination-current">第 {{ details_pagination.page }} / {{ details_pagination.total_pages }} 页</span>
+	      {% if details_pagination.page < details_pagination.total_pages %}
+	      <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/live-stats?people_page={{ people_pagination.page }}&details_page={{ details_pagination.page + 1 }}{{ q_query }}">下一页</a>
+	      {% else %}
+	      <span class="pagination-link is-disabled">下一页</span>
+	      {% endif %}
+	    </div>
+	  </div>
+	</section>
+{% endblock %}

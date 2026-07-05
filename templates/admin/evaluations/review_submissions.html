@@ -1,0 +1,76 @@
+{% extends "admin/layout.html" %}
+{% block page_title %}{{ evaluation.year }} 年评分提交管理{% endblock %}
+{% block page_hint %}单独允许已提交评分的用户重新修改；仅在考核开放且未归档时可操作。{% endblock %}
+{% block content %}
+<section class="panel">
+  <div class="table-head">
+    <h2 class="panel-title">提交状态</h2>
+    <div class="actions">
+      <a class="btn" href="/admin/evaluations">返回考核管理</a>
+      <a class="btn btn-primary" href="/admin/evaluations/{{ evaluation.id }}/review-submissions?page={{ rows_pagination.page }}{{ q_query }}">刷新</a>
+    </div>
+  </div>
+  {% if not evaluation.is_open or evaluation.archived %}
+  <div class="alert alert-error">当前考核未开放或已归档，不能设置重新修改评分。</div>
+  {% endif %}
+  <form class="form-row" method="get">
+    <div class="field"><label>筛选</label><input name="q" value="{{ q }}" placeholder="姓名、部门或职位"></div>
+    <button class="btn btn-primary" type="submit">查询</button>
+    {% if q %}<a class="btn" href="/admin/evaluations/{{ evaluation.id }}/review-submissions">清除</a>{% endif %}
+  </form>
+</section>
+<section class="panel">
+  <div class="table-wrap"><table><thead><tr><th>评分人</th><th>部门</th><th>职位</th><th>任务</th><th>状态</th><th>操作</th></tr></thead><tbody>
+  {% for row in rows %}
+  <tr>
+    <td>{{ row.reviewer.full_name }}</td>
+    <td>{{ row.reviewer.department.name if row.reviewer.department else "未设置部门" }}</td>
+    <td>{{ row.reviewer.position.name if row.reviewer.position else "未设置职位" }}</td>
+    <td>{{ row.submitted_count }} / {{ row.task_count }}</td>
+    <td>
+      {% if row.reopened %}<span class="badge badge-warning">{{ row.status_label }}</span>
+      {% elif row.submitted_count >= row.task_count %}<span class="badge badge-success">{{ row.status_label }}</span>
+      {% else %}<span class="badge">{{ row.status_label }}</span>{% endif %}
+    </td>
+    <td class="table-links">
+      {% if row.can_reopen %}
+      <form method="post" action="/admin/evaluations/{{ evaluation.id }}/review-submissions/{{ row.reviewer.id }}/reopen">
+        <input type="hidden" name="reason" value="">
+        <input type="hidden" name="page" value="{{ rows_pagination.page }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <button type="submit">允许修改</button>
+      </form>
+      {% else %}
+      <button type="button" disabled>允许修改</button>
+      {% endif %}
+      {% if row.can_cancel %}
+      <form method="post" action="/admin/evaluations/{{ evaluation.id }}/review-submissions/{{ row.reviewer.id }}/cancel">
+        <input type="hidden" name="page" value="{{ rows_pagination.page }}">
+        <input type="hidden" name="q" value="{{ q }}">
+        <button type="submit">取消允许</button>
+      </form>
+      {% else %}
+      <button type="button" disabled>取消允许</button>
+      {% endif %}
+    </td>
+  </tr>
+	  {% else %}<tr><td colspan="6" class="empty">暂无评分任务。</td></tr>{% endfor %}
+	  </tbody></table></div>
+	  <div class="pagination">
+	    <div class="pagination-summary">共 {{ rows_pagination.total }} 人，每页 {{ rows_pagination.page_size }} 人</div>
+	    <div class="pagination-actions">
+	      {% if rows_pagination.page > 1 %}
+	      <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/review-submissions?page={{ rows_pagination.page - 1 }}{{ q_query }}">上一页</a>
+	      {% else %}
+	      <span class="pagination-link is-disabled">上一页</span>
+	      {% endif %}
+	      <span class="pagination-current">第 {{ rows_pagination.page }} / {{ rows_pagination.total_pages }} 页</span>
+	      {% if rows_pagination.page < rows_pagination.total_pages %}
+	      <a class="pagination-link" href="/admin/evaluations/{{ evaluation.id }}/review-submissions?page={{ rows_pagination.page + 1 }}{{ q_query }}">下一页</a>
+	      {% else %}
+	      <span class="pagination-link is-disabled">下一页</span>
+	      {% endif %}
+	    </div>
+	  </div>
+	</section>
+{% endblock %}
