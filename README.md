@@ -1,4 +1,4 @@
-# 毕节金融监管分局人事考核系统
+# 人事考核系统
 
 FastAPI API + React + TypeScript + Ant Design 的单位内部人事考核系统。数据库支持 SQLite、MySQL 和 PostgreSQL，后端只提供 `/api` JSON 接口，前端位于 `frontend/`。
 
