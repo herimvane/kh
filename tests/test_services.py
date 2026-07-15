@@ -1,4 +1,5 @@
 import os
+from decimal import Decimal
 
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 
@@ -7,6 +8,7 @@ from app.models import (  # noqa: E402
     Department,
     Evaluation,
     ArchivedRuleSnapshot,
+    ArchivedSubmission,
     EvaluationDepartmentManualScore,
     EvaluationDepartmentRule,
     EvaluationDepartmentRuleOptionLimit,
@@ -26,6 +28,7 @@ from app.models import (  # noqa: E402
 )
 from app.security import hash_password, verify_password  # noqa: E402
 from app.services import archive_evaluation, calculate_evaluation_scores, generate_tasks, submit_votes, validate_vote_payload  # noqa: E402
+from app.api.evaluations import copy_evaluation, copy_evaluation_preview  # noqa: E402
 
 
 def setup_function():
@@ -200,11 +203,74 @@ def test_archive_keeps_snapshot_after_org_changes():
     archive_evaluation(db, evaluation)
     person_score = db.query(__import__("app.models").models.ArchivedPersonScore).one()
     assert db.query(ArchivedRuleSnapshot).filter_by(evaluation_id=evaluation_id).count() > 0
+    assert db.query(ArchivedSubmission).filter_by(evaluation_id=evaluation_id).count() > 0
+    assert db.query(EvaluationTask).filter_by(evaluation_id=evaluation_id).count() == 0
+    assert db.query(EvaluationVote).filter_by(evaluation_id=evaluation_id).count() == 0
+    assert db.query(EvaluationPersonRule).filter_by(evaluation_id=evaluation_id).count() == 0
     target = db.get(User, target_id)
-    target.full_name = "新姓名"
+    db.delete(target)
     db.commit()
+    assert db.get(User, target_id) is None
     assert person_score.full_name == "被评人"
-    assert person_score.final_score == 17.0
+    assert isinstance(person_score.final_score, Decimal)
+    assert person_score.final_score == Decimal("17.0000")
+    db.close()
+
+
+def test_archived_evaluation_can_copy_configuration_from_snapshot():
+    db, evaluation_id, reviewer_id, target_id, other_dept_id = seed_case()
+    evaluation = db.get(Evaluation, evaluation_id)
+    evaluation.is_open = True
+    generate_tasks(db, evaluation)
+    qualified = db.query(ScoreOption).filter_by(name="称职").one()
+    submit_all_reviewers(db, evaluation, qualified)
+    archive_evaluation(db, evaluation)
+    admin = db.query(User).filter_by(role="admin").one()
+
+    old_option_id = qualified.id
+    db.delete(qualified)
+    db.flush()
+    preview = copy_evaluation_preview(evaluation_id, db, admin)
+    assert {item["source_id"] for item in preview["missing"]} == {old_option_id}
+
+    result = copy_evaluation(evaluation_id, {
+        "year": 2027,
+        "name": "2027 年考核",
+    }, db, admin)
+    copied = result["evaluation"]
+
+    assert copied.archived is False
+    assert db.query(EvaluationPersonRule).filter_by(evaluation_id=copied.id).count() == 1
+    assert db.query(EvaluationDepartmentRule).filter_by(evaluation_id=copied.id).count() == 1
+    assert db.query(EvaluationScoreOption).filter_by(evaluation_id=copied.id).count() == 1
+    assert result["skipped_count"] == 3
+    assert result["message"] == f"考核已复制，共复制 {result['copied_count']}条配置，跳过 3条失效配置。"
+    db.close()
+
+
+def test_archived_copy_skips_person_rule_when_specified_reviewer_is_missing():
+    db, evaluation_id, reviewer_id, target_id, other_dept_id = seed_case()
+    evaluation = db.get(Evaluation, evaluation_id)
+    evaluation.is_open = True
+    person_rule = db.query(EvaluationPersonRule).filter_by(evaluation_id=evaluation_id).one()
+    person_rule.reviewer_user_id = reviewer_id
+    db.commit()
+
+    generate_tasks(db, evaluation)
+    qualified = db.query(ScoreOption).filter_by(name="称职").one()
+    submit_all_reviewers(db, evaluation, qualified)
+    archive_evaluation(db, evaluation)
+    admin = db.query(User).filter_by(role="admin").one()
+    db.delete(db.get(User, reviewer_id))
+    db.commit()
+
+    result = copy_evaluation(evaluation_id, {"year": 2027, "name": "2027 年考核"}, db, admin)
+    copied_id = result["evaluation"].id
+
+    assert db.query(EvaluationPersonRule).filter_by(evaluation_id=copied_id).count() == 0
+    assert db.query(EvaluationDepartmentRule).filter_by(evaluation_id=copied_id).count() == 1
+    assert result["skipped_count"] == 1
+    assert "指定评价人已删除" in result["skipped"][0]
     db.close()
 
 

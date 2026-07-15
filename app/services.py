@@ -1,13 +1,16 @@
 import json
 from collections import defaultdict
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
     ArchivedDepartmentScore,
     ArchivedPersonScore,
     ArchivedRuleSnapshot,
+    ArchivedSubmission,
     ArchivedVoteDetail,
     Department,
     Evaluation,
@@ -17,7 +20,9 @@ from app.models import (
     EvaluationDepartmentRuleOptionLimit,
     EvaluationDepartmentScoreOption,
     EvaluationDepartmentScoreShareRule,
+    EvaluationDepartmentShareRule,
     EvaluationPersonRule,
+    EvaluationPersonRuleDepartment,
     EvaluationPersonPositionOptionLimit,
     EvaluationPersonRuleOptionLimit,
     EvaluationScoreOption,
@@ -28,6 +33,24 @@ from app.models import (
     ScoreOption,
     User,
 )
+
+
+ZERO = Decimal("0")
+SCORE_QUANTUM = Decimal("0.01")
+
+
+def decimal_value(value) -> Decimal:
+    return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def rounded_score(value: Decimal) -> Decimal:
+    return decimal_value(value).quantize(SCORE_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def json_decimal(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 def evaluation_person_options(db: Session, evaluation_id: int) -> list[ScoreOption]:
@@ -215,6 +238,35 @@ def validate_vote_payload(db: Session, evaluation: Evaluation, reviewer: User, c
 
 
 def submit_votes(db: Session, evaluation: Evaluation, reviewer: User, choices: dict[int, int]) -> None:
+    locked_evaluation = db.scalar(
+        select(Evaluation).where(Evaluation.id == evaluation.id).with_for_update()
+    )
+    if not locked_evaluation or not locked_evaluation.is_open or locked_evaluation.archived:
+        raise ValueError("当前考核已关闭或已归档，不能提交评分。")
+    tasks = db.scalars(
+        select(EvaluationTask)
+        .where(
+            EvaluationTask.evaluation_id == evaluation.id,
+            EvaluationTask.reviewer_id == reviewer.id,
+        )
+        .with_for_update()
+    ).all()
+    reopened = db.scalar(
+        select(EvaluationReviewReopen)
+        .where(
+            EvaluationReviewReopen.evaluation_id == evaluation.id,
+            EvaluationReviewReopen.reviewer_id == reviewer.id,
+        )
+        .with_for_update()
+    )
+    existing_votes = db.scalar(
+        select(func.count(EvaluationVote.id)).where(
+            EvaluationVote.evaluation_id == evaluation.id,
+            EvaluationVote.reviewer_id == reviewer.id,
+        )
+    ) or 0
+    if existing_votes and not reopened:
+        raise ValueError("你已经提交过本次考核，请勿重复提交。")
     errors = validate_vote_payload(db, evaluation, reviewer, choices)
     if errors:
         raise ValueError(errors[0])
@@ -223,12 +275,6 @@ def submit_votes(db: Session, evaluation: Evaluation, reviewer: User, choices: d
         option.id: option
         for option in db.scalars(select(ScoreOption).where(ScoreOption.id.in_(option_ids))).all()
     }
-    tasks = db.scalars(
-        select(EvaluationTask).where(
-            EvaluationTask.evaluation_id == evaluation.id,
-            EvaluationTask.reviewer_id == reviewer.id,
-        )
-    ).all()
     db.execute(
         delete(EvaluationVote).where(
             EvaluationVote.evaluation_id == evaluation.id,
@@ -253,7 +299,11 @@ def submit_votes(db: Session, evaluation: Evaluation, reviewer: User, choices: d
             EvaluationReviewReopen.reviewer_id == reviewer.id,
         )
     )
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValueError("你已经提交过本次考核，请勿重复提交。") from exc
 
 
 def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
@@ -262,8 +312,8 @@ def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
         .join(EvaluationTask, EvaluationTask.id == EvaluationVote.task_id)
         .where(EvaluationVote.evaluation_id == evaluation.id)
     ).all()
-    person_scores: dict[int, float] = defaultdict(float)
-    department_scores: dict[int, float] = defaultdict(float)
+    person_scores: dict[int, Decimal] = defaultdict(lambda: ZERO)
+    department_scores: dict[int, Decimal] = defaultdict(lambda: ZERO)
     score_groups: dict[tuple, dict] = {}
     details: list[dict] = []
 
@@ -334,7 +384,7 @@ def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
         scores = group["scores"]
         if not scores:
             continue
-        contribution = (sum(scores) / len(scores)) * group["weight"]
+        contribution = (sum(scores, ZERO) / Decimal(len(scores))) * group["weight"]
         if group["task_type"] == "person":
             person_scores[group["target_id"]] += contribution
         elif group["task_type"] == "department":
@@ -380,9 +430,9 @@ def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
                 "target_department_name": user.department.name if user.department else "",
                 "target_position_name": user.position.name if user.position else "",
                 "option_name": "部门得分",
-                "score_value": round(department_score, 2),
+                "score_value": rounded_score(department_score),
                 "weight": rule.weight,
-                "weighted_score": round(department_score * rule.weight, 2),
+                "weighted_score": rounded_score(department_score * rule.weight),
                 "rule_label": f"{user.department.name if user.department else '所在部门'}部门得分折算至{rule.target_position.name}",
             })
 
@@ -396,7 +446,7 @@ def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
                 "full_name": user.full_name,
                 "department_name": user.department.name if user.department else "",
                 "position_name": user.position.name if user.position else "",
-                "final_score": round(final_score, 2),
+                "final_score": rounded_score(final_score),
             })
 
     departments = []
@@ -406,7 +456,7 @@ def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
             departments.append({
                 "department_id": department.id,
                 "department_name": department.name,
-                "final_score": round(final_score, 2),
+                "final_score": rounded_score(final_score),
             })
 
     total_tasks = db.scalar(
@@ -438,6 +488,20 @@ def calculate_evaluation_scores(db: Session, evaluation: Evaluation) -> dict:
 
 
 def evaluation_task_progress(db: Session, evaluation_id: int) -> dict:
+    evaluation = db.get(Evaluation, evaluation_id)
+    if evaluation and evaluation.archived:
+        total_tasks, submitted_tasks = db.execute(
+            select(
+                func.coalesce(func.sum(ArchivedSubmission.task_count), 0),
+                func.coalesce(func.sum(ArchivedSubmission.submitted_count), 0),
+            ).where(ArchivedSubmission.evaluation_id == evaluation_id)
+        ).one()
+        return {
+            "total_tasks": int(total_tasks),
+            "submitted_tasks": int(submitted_tasks),
+            "pending_reopens": 0,
+            "complete": bool(total_tasks) and submitted_tasks >= total_tasks,
+        }
     total_tasks = db.scalar(
         select(func.count(EvaluationTask.id)).where(EvaluationTask.evaluation_id == evaluation_id)
     ) or 0
@@ -458,24 +522,24 @@ def evaluation_task_progress(db: Session, evaluation_id: int) -> dict:
 def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[ArchivedRuleSnapshot]:
     rows: list[ArchivedRuleSnapshot] = []
     person_options = [
-        {"name": option.name, "value": option.value}
+        {"source_score_option_id": option.id, "name": option.name, "value": option.value}
         for option in evaluation_person_options(db, evaluation.id)
     ]
     department_options = [
-        {"name": option.name, "value": option.value}
+        {"source_score_option_id": option.id, "name": option.name, "value": option.value}
         for option in evaluation_department_options(db, evaluation.id)
     ]
     rows.append(ArchivedRuleSnapshot(
         evaluation_id=evaluation.id,
         snapshot_type="person_options",
         title="人员评分选项",
-        payload=json.dumps(person_options, ensure_ascii=False),
+        payload=json.dumps(person_options, ensure_ascii=False, default=json_decimal),
     ))
     rows.append(ArchivedRuleSnapshot(
         evaluation_id=evaluation.id,
         snapshot_type="department_options",
         title="部门评分选项",
-        payload=json.dumps(department_options, ensure_ascii=False),
+        payload=json.dumps(department_options, ensure_ascii=False, default=json_decimal),
     ))
 
     person_limits = db.scalars(
@@ -492,11 +556,13 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         payload=json.dumps([
             {
                 "target_position": item.target_position.name,
+                "source_target_position_id": item.target_position_id,
                 "option": item.option.name,
+                "source_score_option_id": item.score_option_id,
                 "max_people": item.max_people,
             }
             for item in person_limits
-        ], ensure_ascii=False),
+        ], ensure_ascii=False, default=json_decimal),
     ))
 
     department_limits = db.scalars(
@@ -510,9 +576,9 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         snapshot_type="department_limits",
         title="部门评分限制",
         payload=json.dumps([
-            {"option": item.option.name, "max_count": item.max_count}
+            {"source_score_option_id": item.score_option_id, "option": item.option.name, "max_count": item.max_count}
             for item in department_limits
-        ], ensure_ascii=False),
+        ], ensure_ascii=False, default=json_decimal),
     ))
 
     person_rules = db.scalars(select(EvaluationPersonRule).where(EvaluationPersonRule.evaluation_id == evaluation.id)).all()
@@ -523,15 +589,19 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         payload=json.dumps([
             {
                 "reviewer_position": rule.reviewer_position.name,
+                "source_reviewer_position_id": rule.reviewer_position_id,
                 "reviewer_user": rule.reviewer_user.full_name if rule.reviewer_user else "",
+                "source_reviewer_user_id": rule.reviewer_user_id,
                 "target_position": rule.target_position.name,
+                "source_target_position_id": rule.target_position_id,
                 "score_group": rule.score_group,
                 "scope_type": rule.scope_type,
                 "target_departments": [item.department.name for item in rule.target_departments],
+                "source_target_department_ids": [item.department_id for item in rule.target_departments],
                 "weight": rule.weight,
             }
             for rule in person_rules
-        ], ensure_ascii=False),
+        ], ensure_ascii=False, default=json_decimal),
     ))
 
     department_rules = db.scalars(select(EvaluationDepartmentRule).where(EvaluationDepartmentRule.evaluation_id == evaluation.id)).all()
@@ -542,11 +612,13 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         payload=json.dumps([
             {
                 "reviewer_position": rule.reviewer_position.name,
+                "source_reviewer_position_id": rule.reviewer_position_id,
                 "target_department": rule.target_department.name,
+                "source_target_department_id": rule.target_department_id,
                 "weight": rule.weight,
             }
             for rule in department_rules
-        ], ensure_ascii=False),
+        ], ensure_ascii=False, default=json_decimal),
     ))
 
     share_rules = db.scalars(select(EvaluationDepartmentScoreShareRule).where(EvaluationDepartmentScoreShareRule.evaluation_id == evaluation.id)).all()
@@ -555,9 +627,9 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         snapshot_type="department_share_rules",
         title="部门得分占比规则",
         payload=json.dumps([
-            {"target_position": rule.target_position.name, "weight": rule.weight}
+            {"source_target_position_id": rule.target_position_id, "target_position": rule.target_position.name, "weight": rule.weight}
             for rule in share_rules
-        ], ensure_ascii=False),
+        ], ensure_ascii=False, default=json_decimal),
     ))
 
     manual_scores = db.scalars(select(EvaluationDepartmentManualScore).where(EvaluationDepartmentManualScore.evaluation_id == evaluation.id)).all()
@@ -566,9 +638,9 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         snapshot_type="manual_department_scores",
         title="手动部门得分",
         payload=json.dumps([
-            {"department": item.department.name, "score": item.score}
+            {"source_department_id": item.department_id, "department": item.department.name, "score": item.score}
             for item in manual_scores
-        ], ensure_ascii=False),
+        ], ensure_ascii=False, default=json_decimal),
     ))
     return rows
 
@@ -581,6 +653,7 @@ def archive_evaluation(db: Session, evaluation: Evaluation) -> None:
     db.execute(delete(ArchivedDepartmentScore).where(ArchivedDepartmentScore.evaluation_id == evaluation.id))
     db.execute(delete(ArchivedVoteDetail).where(ArchivedVoteDetail.evaluation_id == evaluation.id))
     db.execute(delete(ArchivedRuleSnapshot).where(ArchivedRuleSnapshot.evaluation_id == evaluation.id))
+    db.execute(delete(ArchivedSubmission).where(ArchivedSubmission.evaluation_id == evaluation.id))
 
     result = calculate_evaluation_scores(db, evaluation)
 
@@ -596,6 +669,64 @@ def archive_evaluation(db: Session, evaluation: Evaluation) -> None:
     for snapshot in archived_rule_snapshot_rows(db, evaluation):
         db.add(snapshot)
 
+    tasks = db.scalars(select(EvaluationTask).where(EvaluationTask.evaluation_id == evaluation.id)).all()
+    tasks_by_reviewer: dict[int, list[EvaluationTask]] = defaultdict(list)
+    for task in tasks:
+        tasks_by_reviewer[task.reviewer_id].append(task)
+    for reviewer_id, reviewer_tasks in tasks_by_reviewer.items():
+        reviewer = reviewer_tasks[0].reviewer
+        votes = db.scalars(select(EvaluationVote).where(
+            EvaluationVote.evaluation_id == evaluation.id,
+            EvaluationVote.reviewer_id == reviewer_id,
+        )).all()
+        db.add(ArchivedSubmission(
+            evaluation_id=evaluation.id,
+            reviewer_id=reviewer_id,
+            reviewer_name=reviewer.full_name,
+            department_name=reviewer.department.name if reviewer.department else "",
+            position_name=reviewer.position.name if reviewer.position else "",
+            task_count=len(reviewer_tasks),
+            submitted_count=len(votes),
+            status_label="已提交",
+            submitted_at=max((vote.created_at for vote in votes), default=None),
+        ))
+
+    # Archived views use the independent snapshots above. Removing operational
+    # rows releases foreign keys to current personnel and master data.
+    person_rule_ids = db.scalars(select(EvaluationPersonRule.id).where(EvaluationPersonRule.evaluation_id == evaluation.id)).all()
+    department_rule_ids = db.scalars(select(EvaluationDepartmentRule.id).where(EvaluationDepartmentRule.evaluation_id == evaluation.id)).all()
+    db.execute(delete(EvaluationVote).where(EvaluationVote.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationReviewReopen).where(EvaluationReviewReopen.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationTask).where(EvaluationTask.evaluation_id == evaluation.id))
+    if person_rule_ids:
+        db.execute(delete(EvaluationPersonRuleOptionLimit).where(EvaluationPersonRuleOptionLimit.rule_id.in_(person_rule_ids)))
+        db.execute(delete(EvaluationPersonRuleDepartment).where(EvaluationPersonRuleDepartment.rule_id.in_(person_rule_ids)))
+    if department_rule_ids:
+        db.execute(delete(EvaluationDepartmentRuleOptionLimit).where(EvaluationDepartmentRuleOptionLimit.rule_id.in_(department_rule_ids)))
+    db.execute(delete(EvaluationPersonRule).where(EvaluationPersonRule.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationDepartmentRule).where(EvaluationDepartmentRule.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationPersonPositionOptionLimit).where(EvaluationPersonPositionOptionLimit.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationDepartmentOptionLimit).where(EvaluationDepartmentOptionLimit.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationScoreOption).where(EvaluationScoreOption.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationDepartmentScoreOption).where(EvaluationDepartmentScoreOption.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationDepartmentScoreShareRule).where(EvaluationDepartmentScoreShareRule.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationDepartmentShareRule).where(EvaluationDepartmentShareRule.evaluation_id == evaluation.id))
+    db.execute(delete(EvaluationDepartmentManualScore).where(EvaluationDepartmentManualScore.evaluation_id == evaluation.id))
+
     evaluation.archived = True
     evaluation.is_open = False
     db.commit()
+
+
+def migrate_archived_evaluations(db: Session) -> None:
+    """Upgrade legacy archives while their operational relationships still exist."""
+    evaluations = db.scalars(select(Evaluation).where(Evaluation.archived.is_(True))).all()
+    for evaluation in evaluations:
+        task_count = db.scalar(select(func.count(EvaluationTask.id)).where(EvaluationTask.evaluation_id == evaluation.id)) or 0
+        if not task_count:
+            continue
+        vote_count = db.scalar(select(func.count(EvaluationVote.id)).where(EvaluationVote.evaluation_id == evaluation.id)) or 0
+        if vote_count < task_count:
+            continue
+        evaluation.archived = False
+        archive_evaluation(db, evaluation)

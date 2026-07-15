@@ -1,0 +1,35 @@
+name: personnel-evaluation
+
+services:
+  app:
+    build:
+      context: .
+    image: personnel-evaluation:latest
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    environment:
+      DATABASE_URL: "${DOCKER_DATABASE_URL:-sqlite:////app/data/personnel_eval.db}"
+      DB_POOL_SIZE: "${DB_POOL_SIZE:-5}"
+      DB_MAX_OVERFLOW: "${DB_MAX_OVERFLOW:-10}"
+      DB_POOL_RECYCLE: "${DB_POOL_RECYCLE:-1800}"
+      DB_INIT_MAX_ATTEMPTS: "${DB_INIT_MAX_ATTEMPTS:-30}"
+      INITIAL_ADMIN_USERNAME: "${INITIAL_ADMIN_USERNAME:-admin}"
+      INITIAL_ADMIN_NAME: "${INITIAL_ADMIN_NAME:-系统管理员}"
+      INITIAL_ADMIN_PASSWORD: "${INITIAL_ADMIN_PASSWORD:-}"
+      SESSION_COOKIE_NAME: "${SESSION_COOKIE_NAME:-personnel_session}"
+      SESSION_MAX_AGE: "${SESSION_MAX_AGE:-28800}"
+      SESSION_COOKIE_SECURE: "${SESSION_COOKIE_SECURE:-false}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      LOG_JSON: "${LOG_JSON:-true}"
+      SCORE_DETAIL_PASSWORD_HASH: "${SCORE_DETAIL_PASSWORD_HASH:-}"
+    volumes:
+      #- personnel_data:/app/data
+      - ./data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+#volumes:
+#  personnel_data:

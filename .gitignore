@@ -1,7 +1,14 @@
 __pycache__/
 *.py[cod]
+.DS_Store
 .pytest_cache/
 .venv/
+.env
+.env.docker
 data/*.db
 data/*.db-*
 output/
+backups/
+temp/
+doc.md
+kh.md

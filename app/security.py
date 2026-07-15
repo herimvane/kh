@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import os
+import secrets
 
 
 def hash_password(password: str) -> str:
@@ -12,9 +13,19 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, stored: str) -> bool:
     try:
         algorithm, salt_hex, digest_hex = stored.split("$", 2)
-    except ValueError:
+        if algorithm != "pbkdf2_sha256":
+            return False
+        salt = bytes.fromhex(salt_hex)
+        bytes.fromhex(digest_hex)
+    except (AttributeError, ValueError):
         return False
-    if algorithm != "pbkdf2_sha256":
-        return False
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_hex), 120_000)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 120_000)
     return hmac.compare_digest(digest.hex(), digest_hex)
+
+
+def new_session_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def session_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
