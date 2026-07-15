@@ -120,6 +120,42 @@ def test_api_evaluation_generation_and_user_submission_flow():
     assert cleared.json()["evaluation"]["is_open"] is False
 
 
+def test_same_year_batches_copy_and_single_open_evaluation():
+    admin = login("admin", "admin123")
+
+    first_response = admin.post("/api/evaluations", json={"year": 2026, "name": ""})
+    second_response = admin.post("/api/evaluations", json={"year": 2026, "name": ""})
+
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    first = first_response.json()
+    second = second_response.json()
+    assert (first["sequence"], first["name"]) == (1, "2026-01")
+    assert (second["sequence"], second["name"]) == (2, "2026-02")
+
+    duplicate = admin.post(
+        "/api/evaluations",
+        json={"year": 2026, "sequence": 2, "name": "重复批次"},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "2026 年第 2 批考核已存在。"
+
+    copied_response = admin.post(
+        f"/api/evaluations/{first['id']}/copy",
+        json={"year": 2026, "name": ""},
+    )
+    assert copied_response.status_code == 200
+    copied = copied_response.json()["evaluation"]
+    assert (copied["sequence"], copied["name"]) == (3, "2026-03")
+
+    opened = admin.post(f"/api/evaluations/{first['id']}/toggle-open")
+    blocked = admin.post(f"/api/evaluations/{second['id']}/toggle-open")
+    assert opened.status_code == 200
+    assert opened.json()["evaluation"]["is_open"] is True
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == "“2026-01”正在开放，请先关闭该考核。"
+
+
 def test_person_rule_scope_is_normalized_and_validated():
     admin = login("admin", "admin123")
     department = admin.post("/api/departments", json={"name": "办公室"}).json()

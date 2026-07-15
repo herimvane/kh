@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_api_admin, require_api_user
@@ -79,20 +80,37 @@ router = APIRouter(tags=["evaluations"])
 
 @router.get("/evaluations", response_model=list[EvaluationRow])
 def list_evaluations(db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluations = db.scalars(select(Evaluation).order_by(Evaluation.year.desc())).all()
+    evaluations = db.scalars(
+        select(Evaluation).order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+    ).all()
     return [evaluation_row(db, evaluation) for evaluation in evaluations]
+
+
+def next_evaluation_sequence(db: Session, year: int) -> int:
+    current = db.scalar(select(func.max(Evaluation.sequence)).where(Evaluation.year == year)) or 0
+    return int(current) + 1
 
 
 @router.post("/evaluations", response_model=EvaluationRow, status_code=status.HTTP_201_CREATED)
 def create_evaluation(payload: EvaluationCreate, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = Evaluation(year=payload.year, name=payload.name.strip() or f"{payload.year} 年考核")
+    sequence = payload.sequence if payload.sequence is not None else next_evaluation_sequence(db, payload.year)
+    if sequence < 1:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="年内批次必须大于 0。")
+    evaluation = Evaluation(
+        year=payload.year,
+        sequence=sequence,
+        name=payload.name.strip() or f"{payload.year}-{sequence:02d}",
+    )
     db.add(evaluation)
     try:
         db.flush()
-    except Exception as exc:
+    except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="考核年度已存在。") from exc
-    add_audit_log(db, evaluation.id, user, "新增考核", f"年度：{evaluation.year}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"{payload.year} 年第 {sequence} 批考核已存在。",
+        ) from exc
+    add_audit_log(db, evaluation.id, user, "新增考核", f"年度：{evaluation.year}；批次：{evaluation.sequence}")
     db.commit()
     return evaluation_row(db, evaluation)
 
@@ -439,9 +457,21 @@ def copy_evaluation_preview(evaluation_id: int, db: Session = Depends(get_db), _
 def copy_evaluation(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
     source = require_evaluation(db, evaluation_id)
     year = int(payload["year"])
-    target = Evaluation(year=year, name=(payload.get("name") or "").strip() or f"{source.name} 副本")
+    sequence = next_evaluation_sequence(db, year)
+    target = Evaluation(
+        year=year,
+        sequence=sequence,
+        name=(payload.get("name") or "").strip() or f"{year}-{sequence:02d}",
+    )
     db.add(target)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="批次号已被其他操作占用，请重新复制。",
+        ) from exc
     if source.archived:
         data = archived_snapshots(db, source.id)
         copied_count = 0
@@ -622,6 +652,7 @@ def clear_evaluation_tasks(evaluation_id: int, confirm: bool = False, db: Sessio
     db.execute(delete(EvaluationTask).where(EvaluationTask.evaluation_id == evaluation_id))
     evaluation.tasks_generated = False
     evaluation.is_open = False
+    evaluation.open_slot = None
     add_audit_log(db, evaluation_id, user, "清空考核任务", f"删除任务：{task_count} 个；删除评分：{vote_count} 条")
     db.commit()
     return EvaluationActionResponse(message=f"已清空 {task_count} 个考核任务。", evaluation=evaluation_row(db, evaluation))
@@ -632,9 +663,32 @@ def toggle_evaluation(evaluation_id: int, db: Session = Depends(get_db), user: U
     evaluation = require_evaluation_for_update(db, evaluation_id)
     if evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档考核不能修改状态。")
+    if not evaluation.is_open:
+        active = db.scalar(
+            select(Evaluation)
+            .where(Evaluation.is_open.is_(True), Evaluation.id != evaluation.id)
+            .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+            .with_for_update()
+        )
+        if active:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"“{active.name}”正在开放，请先关闭该考核。",
+            )
     evaluation.is_open = not evaluation.is_open
+    evaluation.open_slot = 1 if evaluation.is_open else None
     add_audit_log(db, evaluation_id, user, "更新考核状态", "开放考核" if evaluation.is_open else "关闭考核")
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        active = db.scalar(
+            select(Evaluation)
+            .where(Evaluation.is_open.is_(True), Evaluation.id != evaluation_id)
+            .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+        )
+        detail = f"“{active.name}”正在开放，请先关闭该考核。" if active else "已有其他考核正在开放。"
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
     return EvaluationActionResponse(message="考核状态已更新。", evaluation=evaluation_row(db, evaluation))
 
 

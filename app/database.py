@@ -1,7 +1,7 @@
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -59,6 +59,21 @@ def migrate_db() -> None:
     with engine.begin() as connection:
         config.attributes["connection"] = connection
         command.upgrade(config, "head")
+        _validate_migrated_schema(connection)
+
+
+def _validate_migrated_schema(connection) -> None:
+    inspector = inspect(connection)
+    if "evaluations" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("evaluations")}
+    missing = {"sequence", "open_slot"} - columns
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise RuntimeError(
+            "数据库迁移版本与实际表结构不一致：evaluations 表缺少字段 "
+            f"{names}。请确认 migrations 目录完整后重新执行 alembic upgrade head。"
+        )
 
 
 def init_db() -> None:

@@ -141,6 +141,7 @@ class ScoreOptionRow(BaseModel):
 
 class EvaluationCreate(BaseModel):
     year: int
+    sequence: int | None = None
     name: str = ""
 
 
@@ -148,6 +149,7 @@ class EvaluationRow(BaseModel):
     id: int
     name: str
     year: int
+    sequence: int
     is_open: bool
     tasks_generated: bool
     archived: bool

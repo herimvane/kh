@@ -715,6 +715,7 @@ def archive_evaluation(db: Session, evaluation: Evaluation) -> None:
 
     evaluation.archived = True
     evaluation.is_open = False
+    evaluation.open_slot = None
     db.commit()
 
 

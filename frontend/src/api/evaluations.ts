@@ -4,6 +4,7 @@ export type Evaluation = {
   id: number;
   name: string;
   year: number;
+  sequence: number;
   is_open: boolean;
   tasks_generated: boolean;
   archived: boolean;
@@ -123,7 +124,7 @@ export type EvaluationStatsResponse = {
 export const evaluationsApi = {
   list: () => apiRequest<Evaluation[]>("/api/evaluations"),
   config: (id: number) => apiRequest<EvaluationConfig>(`/api/evaluations/${id}/config`),
-  create: (payload: { year: number; name?: string }) =>
+  create: (payload: { year: number; sequence?: number; name?: string }) =>
     apiRequest<Evaluation>("/api/evaluations", { method: "POST", body: JSON.stringify(payload) }),
   copyPreview: (id: number) => apiRequest<{
     missing: Array<{ kind: string; source_id: number; name: string }>;

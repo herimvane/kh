@@ -151,6 +151,7 @@ def evaluation_row(db: Session, evaluation: Evaluation) -> EvaluationRow:
         id=evaluation.id,
         name=evaluation.name,
         year=evaluation.year,
+        sequence=evaluation.sequence,
         is_open=evaluation.is_open,
         tasks_generated=evaluation.tasks_generated,
         archived=evaluation.archived,
@@ -161,7 +162,11 @@ def evaluation_row(db: Session, evaluation: Evaluation) -> EvaluationRow:
 
 
 def current_open_evaluation(db: Session) -> Evaluation | None:
-    return db.scalar(select(Evaluation).where(Evaluation.is_open.is_(True)).order_by(Evaluation.year.desc()))
+    return db.scalar(
+        select(Evaluation)
+        .where(Evaluation.is_open.is_(True))
+        .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+    )
 
 
 def task_limit_map(db: Session, evaluation_id: int) -> dict[str, int]:
@@ -450,5 +455,4 @@ def evaluation_config_payload(db: Session, evaluation: Evaluation) -> dict:
         "share_rules": share_rules,
         "manual_scores": manual_scores,
     }
-
 

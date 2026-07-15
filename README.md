@@ -2,6 +2,8 @@
 
 FastAPI API + React + TypeScript + Ant Design 的单位内部人事考核系统。数据库支持 SQLite、MySQL 和 PostgreSQL，后端只提供 `/api` JSON 接口，前端位于 `frontend/`。
 
+考核按“年度 + 年内批次”管理，同一年可创建多次考核。批次留空时自动顺延，名称留空时生成如 `2026-02` 的名称。同一时间最多只允许一个考核开放。
+
 ## 运行要求
 
 - Python 3.11 或 3.12。
@@ -82,6 +84,8 @@ cd frontend && npm ci && npm run build && cd ..
 ```
 
 若迁移失败，不要继续启动新版本；应保留错误日志，并使用升级前备份恢复。生产数据库执行 `alembic downgrade` 前也必须验证该迁移确实支持安全回滚。
+
+若升级后出现 `evaluations.open_slot does not exist`，通常表示数据库的 Alembic 版本记录与实际表结构不一致。当前版本会通过 `20260715_05` 自动修复该漂移；更新完整的 `migrations` 目录后执行 `alembic upgrade head`，确认 `alembic current` 显示 `20260715_05`，再重启服务。
 
 ## 会话与敏感密码
 

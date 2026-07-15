@@ -79,11 +79,17 @@ class ScoreOption(Base):
 
 class Evaluation(Base):
     __tablename__ = "evaluations"
+    __table_args__ = (
+        UniqueConstraint("year", "sequence", name="uq_evaluations_year_sequence"),
+        UniqueConstraint("open_slot", name="uq_evaluations_single_open"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(160), default="")
-    year: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    year: Mapped[int] = mapped_column(Integer, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, default=1)
     is_open: Mapped[bool] = mapped_column(Boolean, default=False)
+    open_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tasks_generated: Mapped[bool] = mapped_column(Boolean, default=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

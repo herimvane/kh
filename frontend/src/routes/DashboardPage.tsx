@@ -61,14 +61,15 @@ export default function DashboardPage({ onNavigate }: { onNavigate: (route: "eva
   const submittedTasks = evaluations.reduce((sum, item) => sum + item.submitted_tasks, 0);
   const completionPercent = totalTasks ? Math.round((submittedTasks / totalTasks) * 100) : 0;
   const currentYear = new Date().getFullYear();
-  const latestYear = evaluations.length ? Math.max(...evaluations.map((item) => item.year)) : null;
-  const latestYearEvaluations = latestYear === null ? [] : evaluations.filter((item) => item.year === latestYear);
-  const latestYearTotalTasks = latestYearEvaluations.reduce((sum, item) => sum + item.total_tasks, 0);
-  const latestYearSubmittedTasks = latestYearEvaluations.reduce((sum, item) => sum + item.submitted_tasks, 0);
-  const latestYearCompletionPercent = latestYearTotalTasks
-    ? Math.round((latestYearSubmittedTasks / latestYearTotalTasks) * 100)
+  const latest = [...evaluations]
+    .sort((a, b) => b.year - a.year || b.sequence - a.sequence || b.id - a.id)
+    .slice(0, 5);
+  const latestEvaluation = latest[0] ?? null;
+  const latestTotalTasks = latestEvaluation?.total_tasks ?? 0;
+  const latestSubmittedTasks = latestEvaluation?.submitted_tasks ?? 0;
+  const latestCompletionPercent = latestTotalTasks
+    ? Math.round((latestSubmittedTasks / latestTotalTasks) * 100)
     : 0;
-  const latest = [...evaluations].sort((a, b) => b.year - a.year || b.id - a.id).slice(0, 5);
 
   return (
     <div className="dashboard-page">
@@ -81,16 +82,16 @@ export default function DashboardPage({ onNavigate }: { onNavigate: (route: "eva
       </div>
 
       <div className="dashboard-main-grid">
-        <Card className="panel-card completion-card" title="考核完成情况" extra={<Button size="small">{latestYear ?? "--"}</Button>}>
+        <Card className="panel-card completion-card" title="考核完成情况" extra={<Button size="small">{latestEvaluation?.name ?? "--"}</Button>}>
           <div className="donut-wrap">
-            <div className="donut-chart" style={{ "--done": `${latestYearCompletionPercent * 3.6}deg` } as React.CSSProperties}>
-              <strong>{latestYearCompletionPercent}%</strong>
+            <div className="donut-chart" style={{ "--done": `${latestCompletionPercent * 3.6}deg` } as React.CSSProperties}>
+              <strong>{latestCompletionPercent}%</strong>
               <span>完成率</span>
             </div>
             <div className="legend-list">
-              <DashboardLegend color="#2877ff" label="已完成" value={`${latestYearSubmittedTasks}项`} percent={latestYearCompletionPercent} />
-              <DashboardLegend color="#29c59a" label="考核中" value={`${Math.max(latestYearTotalTasks - latestYearSubmittedTasks, 0)}项`} percent={Math.max(100 - latestYearCompletionPercent, 0)} />
-              <DashboardLegend color="#ff9f2e" label="未开始" value={`${latestYearEvaluations.filter((item) => !item.tasks_generated).length}个`} percent={latestYearEvaluations.length ? Math.round((latestYearEvaluations.filter((item) => !item.tasks_generated).length / latestYearEvaluations.length) * 100) : 0} />
+              <DashboardLegend color="#2877ff" label="已完成" value={`${latestSubmittedTasks}项`} percent={latestCompletionPercent} />
+              <DashboardLegend color="#29c59a" label="待完成" value={`${Math.max(latestTotalTasks - latestSubmittedTasks, 0)}项`} percent={latestTotalTasks ? Math.max(100 - latestCompletionPercent, 0) : 0} />
+              <DashboardLegend color="#ff9f2e" label="未生成任务" value={latestEvaluation && !latestEvaluation.tasks_generated ? "1个" : "0个"} percent={latestEvaluation && !latestEvaluation.tasks_generated ? 100 : 0} />
             </div>
           </div>
         </Card>
@@ -102,7 +103,7 @@ export default function DashboardPage({ onNavigate }: { onNavigate: (route: "eva
                 <span className={item.archived ? "status-line done" : item.is_open ? "status-line active" : "status-line pending"} />
                 <span>
                   <strong>{item.name}</strong>
-                  <small>考核年度：{item.year}</small>
+                  <small>{item.year} 年 · 第 {item.sequence} 批</small>
                 </span>
                 <Tag color={item.archived ? "success" : item.is_open ? "processing" : "default"}>{item.archived ? "已完成" : item.is_open ? "考核中" : "未开放"}</Tag>
               </button>

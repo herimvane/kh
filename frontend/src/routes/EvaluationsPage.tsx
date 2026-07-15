@@ -64,10 +64,14 @@ export default function EvaluationsPage() {
 
   const save = async () => {
     const values = await form.validateFields();
-    await evaluationsApi.create(values);
-    message.success("考核已创建。");
-    setOpen(false);
-    await load();
+    try {
+      await evaluationsApi.create(values);
+      message.success("考核已创建。");
+      setOpen(false);
+      await load();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "创建考核失败。");
+    }
   };
 
   const runAction = async (action: () => Promise<{ message: string }>) => {
@@ -135,6 +139,7 @@ export default function EvaluationsPage() {
         pagination={tablePagination()}
         columns={[
           { title: "年度", dataIndex: "year", width: 100 },
+          { title: "年内批次", dataIndex: "sequence", width: 110, render: (value) => `第 ${value} 批` },
           { title: "名称", dataIndex: "name" },
           { title: "任务进度", render: (_, record) => `${record.submitted_tasks} / ${record.total_tasks}` },
           { title: "状态", render: (_, record) => <Space><Tag color={record.is_open ? "success" : "default"}>{record.is_open ? "开放" : "未开放"}</Tag>{record.archived ? <Tag color="blue">已归档</Tag> : null}</Space> },
@@ -182,9 +187,14 @@ export default function EvaluationsPage() {
                       ),
                       onOk: async () => {
                         const values = await copyForm.validateFields();
-                        const result = await evaluationsApi.copy(record.id, values);
-                        message.success(result.message, 5);
-                        await load();
+                        try {
+                          const result = await evaluationsApi.copy(record.id, values);
+                          message.success(result.message, 5);
+                          await load();
+                        } catch (error) {
+                          message.error(error instanceof Error ? error.message : "复制考核失败。");
+                          throw error;
+                        }
                       }
                     });
                   }}
@@ -206,7 +216,8 @@ export default function EvaluationsPage() {
       <Modal title="新增考核" open={open} onCancel={() => setOpen(false)} onOk={save}>
         <Form form={form} layout="vertical">
           <Form.Item name="year" label="年度" rules={[{ required: true, message: "请输入年度。" }]}><InputNumber min={2000} max={2100} style={{ width: "100%" }} /></Form.Item>
-          <Form.Item name="name" label="名称"><Input placeholder="留空则使用年度考核" /></Form.Item>
+          <Form.Item name="sequence" label="年内批次"><InputNumber min={1} precision={0} placeholder="留空则自动顺延" style={{ width: "100%" }} /></Form.Item>
+          <Form.Item name="name" label="考核名称"><Input placeholder="留空自动生成，如 2026-02" /></Form.Item>
         </Form>
       </Modal>
       <Modal
@@ -229,7 +240,7 @@ export default function EvaluationsPage() {
         </Form>
       </Modal>
       <Drawer
-        title={selected ? `${selected.name}（${selected.year}）` : "考核配置"}
+        title={selected ? `${selected.name}（${selected.year} 年第 ${selected.sequence} 批）` : "考核配置"}
         open={configOpen}
         onClose={() => setConfigOpen(false)}
         width="min(1180px, 96vw)"
