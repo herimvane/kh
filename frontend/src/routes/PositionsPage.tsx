@@ -33,7 +33,7 @@ import {
 import { settingsApi } from "../api/settings";
 import { buildDepartmentTree, confirmDeletion, PageTitle, tablePagination } from "./routeShared";
 
-export default function PositionsPage() {
+export default function PositionsPage({ readOnly = false }: { readOnly?: boolean }) {
   const [rows, setRows] = useState<Position[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<Position | null>(null);
@@ -62,7 +62,7 @@ export default function PositionsPage() {
 
   return (
     <>
-      <PageTitle title="职位管理" extra={<Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>新增职位</Button>} />
+      <PageTitle title="职位管理" extra={!readOnly ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>新增职位</Button> : undefined} />
       <Table
         rowKey="id"
         loading={loading}
@@ -71,16 +71,16 @@ export default function PositionsPage() {
         columns={[
           { title: "排序", dataIndex: "sort_order", width: 90 },
           { title: "职位名称", dataIndex: "name" },
-          {
+          ...(!readOnly ? [{
             title: "操作",
             width: 180,
-            render: (_, record) => (
+            render: (_: unknown, record: Position) => (
               <Space>
                 <Button size="small" onClick={() => { setEditing(record); form.setFieldsValue(record); setOpen(true); }}>编辑</Button>
                 <Button size="small" danger onClick={() => confirmDeletion(modal, { title: "删除职位", content: record.name, action: () => masterDataApi.deletePosition(record.id), onSuccess: async (result) => { message.success(result.message); await load(); } })}>删除</Button>
               </Space>
             )
-          }
+          }] : [])
         ]}
       />
       <Modal title={editing ? "编辑职位" : "新增职位"} open={open} onCancel={() => setOpen(false)} onOk={save}>
@@ -96,4 +96,3 @@ export default function PositionsPage() {
     </>
   );
 }
-

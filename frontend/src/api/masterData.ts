@@ -31,6 +31,9 @@ export type UserRow = {
   position_id?: number | null;
   department_name?: string | null;
   position_name?: string | null;
+  admin_scope_department_id?: number | null;
+  admin_scope_department_name?: string | null;
+  is_super_admin: boolean;
 };
 
 export type ScoreOption = {

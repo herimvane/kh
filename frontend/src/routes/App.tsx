@@ -64,6 +64,7 @@ import {
 import { settingsApi } from "../api/settings";
 
 const EvaluationAppPage = lazy(() => import("./EvaluationAppPage"));
+const MyEvaluationsPage = lazy(() => import("./MyEvaluationsPage"));
 const EvaluationsPage = lazy(() => import("./EvaluationsPage"));
 const DashboardPage = lazy(() => import("./DashboardPage"));
 const DepartmentsPage = lazy(() => import("./DepartmentsPage"));
@@ -77,7 +78,7 @@ type LoginFormValues = {
   password: string;
 };
 
-type RouteKey = "dashboard" | "departments" | "positions" | "users" | "score-options" | "evaluations" | "settings" | "evaluation-app";
+type RouteKey = "dashboard" | "departments" | "positions" | "users" | "score-options" | "evaluations" | "settings" | "my-evaluations" | "evaluation-app";
 
 const DEFAULT_SYSTEM_NAME = "人事考核管理系统";
 
@@ -229,14 +230,15 @@ function DepartmentMultiTreeSelect({ departments, value = [], onChange, placehol
 }
 
 function routeFromPath(pathname: string, role?: string): RouteKey {
-  if (pathname.startsWith("/app/evaluation")) return "evaluation-app";
+  if (/^\/app\/evaluations\/\d+\/?$/.test(pathname)) return "evaluation-app";
+  if (pathname.startsWith("/app/evaluation")) return "my-evaluations";
   if (pathname.includes("/departments")) return "departments";
   if (pathname.includes("/positions")) return "positions";
   if (pathname.includes("/users")) return "users";
   if (pathname.includes("/score-options")) return "score-options";
   if (pathname.includes("/evaluations")) return "evaluations";
   if (pathname.includes("/settings")) return "settings";
-  return role === "user" ? "evaluation-app" : "dashboard";
+  return role === "user" ? "my-evaluations" : "dashboard";
 }
 
 function pathFromRoute(route: RouteKey): string {
@@ -248,7 +250,8 @@ function pathFromRoute(route: RouteKey): string {
     "score-options": "/admin/score-options",
     evaluations: "/admin/evaluations",
     settings: "/admin/settings",
-    "evaluation-app": "/app/evaluation"
+    "my-evaluations": "/app/evaluations",
+    "evaluation-app": "/app/evaluations"
   };
   return map[route];
 }
@@ -266,7 +269,7 @@ function Root() {
   const [user, setUser] = useState<UserSummary | null>(null);
   const [booting, setBooting] = useState(true);
   const [route, setRoute] = useState<RouteKey>(() => routeFromPath(window.location.pathname));
-  const [siderCollapsed, setSiderCollapsed] = useState(false);
+  const [siderCollapsed, setSiderCollapsed] = useState(() => window.matchMedia("(max-width: 1024px)").matches);
   const [systemName, setSystemName] = useState(DEFAULT_SYSTEM_NAME);
 
   useEffect(() => {
@@ -281,6 +284,27 @@ function Root() {
   }, []);
 
   useEffect(() => { document.title = systemName; }, [systemName]);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 1024px)");
+    const syncSider = (event: MediaQueryListEvent) => setSiderCollapsed(event.matches);
+    query.addEventListener("change", syncSider);
+    return () => query.removeEventListener("change", syncSider);
+  }, []);
+  useEffect(() => {
+    if (!user) return;
+    if (user.role === "user" && !window.location.pathname.startsWith("/app/evaluations")) {
+      window.history.replaceState(null, "", "/app/evaluations");
+      setRoute("my-evaluations");
+    } else if (user.role === "admin" && !user.is_super_admin && route === "settings") {
+      window.history.replaceState(null, "", "/admin");
+      setRoute("dashboard");
+    }
+  }, [route, user]);
+  useEffect(() => {
+    const handlePopState = () => setRoute(routeFromPath(window.location.pathname, user?.role));
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [user?.role]);
 
   const navigate = (nextRoute: RouteKey) => {
     setRoute(nextRoute);
@@ -293,6 +317,13 @@ function Root() {
     window.history.pushState(null, "", "/");
     message.success("已退出登录。");
   };
+
+  const enterEvaluation = (evaluationId: number) => {
+    setRoute("evaluation-app");
+    window.history.pushState(null, "", `/app/evaluations/${evaluationId}`);
+  };
+
+  const selectedEvaluationId = Number(window.location.pathname.match(/^\/app\/evaluations\/(\d+)/)?.[1] || 0);
 
   if (booting) {
     return <div className="boot-screen">正在加载系统...</div>;
@@ -314,7 +345,11 @@ function Root() {
         />
         <main className="user-workspace">
           <Suspense fallback={<div className="boot-screen">正在加载评分工作台...</div>}>
-            <EvaluationAppPage />
+            {route === "evaluation-app" && selectedEvaluationId ? (
+              <EvaluationAppPage evaluationId={selectedEvaluationId} onBack={() => navigate("my-evaluations")} />
+            ) : (
+              <MyEvaluationsPage onEnter={enterEvaluation} />
+            )}
           </Suspense>
         </main>
       </Layout>
@@ -337,7 +372,7 @@ function Root() {
             { key: "positions", icon: <IdcardOutlined />, label: "职位管理" },
             { key: "score-options", icon: <AuditOutlined />, label: "评分选项" },
             { key: "evaluations", icon: <CheckSquareOutlined />, label: "考核管理" },
-            { key: "settings", icon: <ControlOutlined />, label: "系统设置" },
+            ...(user.is_super_admin ? [{ key: "settings", icon: <ControlOutlined />, label: "系统设置" }] : []),
           ]}
         />
       </Layout.Sider>
@@ -355,14 +390,14 @@ function Root() {
         <main className="admin-workspace">
           <Suspense fallback={<div className="boot-screen">正在加载页面...</div>}>
             {route === "dashboard" ? <DashboardPage onNavigate={navigate} /> : null}
-            {route === "departments" ? <DepartmentsPage /> : null}
-            {route === "positions" ? <PositionsPage /> : null}
-            {route === "users" ? <UsersPage /> : null}
-            {route === "score-options" ? <ScoreOptionsPage /> : null}
+            {route === "departments" ? <DepartmentsPage readOnly={!user.is_super_admin} /> : null}
+            {route === "positions" ? <PositionsPage readOnly={!user.is_super_admin} /> : null}
+            {route === "users" ? <UsersPage readOnly={!user.is_super_admin} /> : null}
+            {route === "score-options" ? <ScoreOptionsPage readOnly={!user.is_super_admin} /> : null}
             {route === "evaluations" ? (
-              <EvaluationsPage />
+              <EvaluationsPage user={user} />
             ) : null}
-            {route === "settings" ? <SystemSettingsPage systemName={systemName} onChanged={setSystemName} /> : null}
+            {route === "settings" && user.is_super_admin ? <SystemSettingsPage systemName={systemName} onChanged={setSystemName} /> : null}
           </Suspense>
         </main>
       </Layout>
@@ -424,7 +459,7 @@ function HeaderBar({
               onClick={onToggleSider}
             />
           ) : <span className="header-dot" />}
-          <span>{admin ? systemName : "评分工作台"}</span>
+          <span>{admin ? systemName : "我的考核"}</span>
         </div>
         <Space size={12}>
           <span>{user.full_name}</span>

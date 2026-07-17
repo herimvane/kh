@@ -37,10 +37,13 @@ import {
   type ReviewSubmissionDetailResponse
 } from "../api/evaluations";
 import { masterDataApi, type DepartmentChoice, type Position, type ReviewerUser } from "../api/masterData";
+import type { UserSummary } from "../api/auth";
+import { formatDateTime } from "../utils/dateTime";
 import { buildDepartmentTree, confirmDeletion, DepartmentMultiTreeSelect, PageTitle, tablePagination } from "./routeShared";
 
-export default function EvaluationsPage() {
+export default function EvaluationsPage({ user }: { user: UserSummary }) {
   const [rows, setRows] = useState<Evaluation[]>([]);
+  const [departmentChoices, setDepartmentChoices] = useState<DepartmentChoice[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Evaluation | null>(null);
@@ -60,7 +63,10 @@ export default function EvaluationsPage() {
       setLoading(false);
     }
   };
-  useEffect(() => void load(), []);
+  useEffect(() => {
+    void load();
+    if (user.is_super_admin) masterDataApi.departmentChoices().then(setDepartmentChoices).catch(() => undefined);
+  }, [user.is_super_admin]);
 
   const save = async () => {
     const values = await form.validateFields();
@@ -141,6 +147,7 @@ export default function EvaluationsPage() {
           { title: "年度", dataIndex: "year", width: 100 },
           { title: "年内批次", dataIndex: "sequence", width: 110, render: (value) => `第 ${value} 批` },
           { title: "名称", dataIndex: "name" },
+          { title: "发起部门", dataIndex: "owner_department_name", width: 180 },
           { title: "任务进度", render: (_, record) => `${record.submitted_tasks} / ${record.total_tasks}` },
           { title: "状态", render: (_, record) => <Space><Tag color={record.is_open ? "success" : "default"}>{record.is_open ? "开放" : "未开放"}</Tag>{record.archived ? <Tag color="blue">已归档</Tag> : null}</Space> },
           {
@@ -218,6 +225,18 @@ export default function EvaluationsPage() {
           <Form.Item name="year" label="年度" rules={[{ required: true, message: "请输入年度。" }]}><InputNumber min={2000} max={2100} style={{ width: "100%" }} /></Form.Item>
           <Form.Item name="sequence" label="年内批次"><InputNumber min={1} precision={0} placeholder="留空则自动顺延" style={{ width: "100%" }} /></Form.Item>
           <Form.Item name="name" label="考核名称"><Input placeholder="留空自动生成，如 2026-02" /></Form.Item>
+          {user.is_super_admin ? (
+            <Form.Item name="owner_department_id" label="所属部门" extra="不选择表示全局考核；部门管理员只能创建自己部门范围的考核。">
+              <TreeSelect
+                allowClear
+                showSearch
+                treeNodeFilterProp="title"
+                treeData={buildDepartmentTree(departmentChoices)}
+                placeholder="不选择则为全局考核"
+                treeDefaultExpandAll
+              />
+            </Form.Item>
+          ) : null}
         </Form>
       </Modal>
       <Modal
@@ -246,13 +265,13 @@ export default function EvaluationsPage() {
         width="min(1180px, 96vw)"
         destroyOnClose
       >
-        {selected ? <EvaluationConfigPanel evaluation={selected} onChanged={async () => { await load(); }} /> : null}
+        {selected ? <EvaluationConfigPanel evaluation={selected} user={user} onChanged={async () => { await load(); }} /> : null}
       </Drawer>
     </>
   );
 }
 
-function EvaluationConfigPanel({ evaluation, onChanged }: { evaluation: Evaluation; onChanged: () => Promise<void> }) {
+function EvaluationConfigPanel({ evaluation, user, onChanged }: { evaluation: Evaluation; user: UserSummary; onChanged: () => Promise<void> }) {
   const [config, setConfig] = useState<EvaluationConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const { message } = AntApp.useApp();
@@ -278,12 +297,20 @@ function EvaluationConfigPanel({ evaluation, onChanged }: { evaluation: Evaluati
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       {evaluation.archived ? <Alert type="info" showIcon message="归档快照" description="以下规则、提交记录和最终结果已固化，不受当前人员及组织数据变更影响。" /> : null}
+      {!config.evaluation.archived && config.evaluation.tasks_generated ? (
+        <Alert
+          type="warning"
+          showIcon
+          message="考核规则已锁定"
+          description="考核任务已生成。规则需要调整时请先清空任务；手动部门得分仍可继续录入。"
+        />
+      ) : null}
       <Tabs
       items={[
         { key: "person", label: "人员考核规则", children: <PersonRulesTab config={config} refresh={refresh} /> },
         { key: "department", label: "部门考核规则", children: <DepartmentRulesTab config={config} refresh={refresh} /> },
         { key: "share", label: "部门得分占比", children: <DepartmentShareTab config={config} refresh={refresh} /> },
-        { key: "submissions", label: "评分提交管理", children: <ReviewSubmissionsTab evaluationId={evaluation.id} /> },
+        { key: "submissions", label: "评分提交管理", children: <ReviewSubmissionsTab evaluationId={evaluation.id} canViewDetails={user.is_super_admin} /> },
         evaluation.archived
           ? { key: "final", label: "最终结果", children: <StatsTab evaluationId={evaluation.id} archived /> }
           : { key: "live", label: "实时统计", children: <StatsTab evaluationId={evaluation.id} archived={false} /> }
@@ -324,17 +351,124 @@ function DepartmentScopeSummary({ rule, departmentNames }: { rule: any; departme
   );
 }
 
+function formatPercent(value: unknown) {
+  const percent = Number(value) * 100;
+  return `${Number.isInteger(percent) ? percent : Number(percent.toFixed(2))}%`;
+}
+
+function departmentLeafName(value: unknown) {
+  const parts = String(value).split(/\s*\/\s*/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
+function DepartmentNamesSummary({ rule, departmentNames }: { rule: any; departmentNames: Map<number, string> }) {
+  const fallbackNames = (rule.target_department_names || [])
+    .map(departmentLeafName)
+    .filter(Boolean) as string[];
+  const names = (rule.target_department_ids || [])
+    .map((departmentId: number, index: number) => departmentNames.get(departmentId) || fallbackNames[index])
+    .filter(Boolean) as string[];
+  const resolvedNames = names.length
+    ? names
+    : String(rule.target_department_name || "")
+      .split("、")
+      .map((name) => departmentLeafName(name.replace(/等\d+个部门$/, "")))
+      .filter(Boolean) as string[];
+  if (!resolvedNames.length) return <span>-</span>;
+  const fullText = resolvedNames.join("、");
+  const summary = resolvedNames.length > 2
+    ? `${resolvedNames.slice(0, 2).join("、")}等${resolvedNames.length}个部门`
+    : fullText;
+  return (
+    <Tooltip title={fullText !== summary ? fullText : undefined}>
+      <span className="department-scope-summary">{summary}</span>
+    </Tooltip>
+  );
+}
+
+function ScoreOptionsCard({
+  title,
+  disabled,
+  options,
+  selectedIds,
+  onSave
+}: {
+  title: string;
+  disabled: boolean;
+  options: EvaluationConfig["score_options"];
+  selectedIds: number[];
+  onSave: (ids: number[]) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draftIds, setDraftIds] = useState<number[]>(selectedIds);
+  const selectedOptions = options.filter((option) => selectedIds.includes(option.id));
+  const openEditor = () => {
+    setDraftIds(selectedIds);
+    setOpen(true);
+  };
+  const closeEditor = () => {
+    setOpen(false);
+    setDraftIds(selectedIds);
+  };
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(draftIds);
+      setOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <>
+      <Card title={title} extra={<Button type="primary" disabled={disabled} onClick={openEditor}>配置评分选项</Button>}>
+        <Table
+          size="small"
+          rowKey="id"
+          dataSource={selectedOptions}
+          pagination={false}
+          columns={[
+            { title: "评分项", dataIndex: "name" },
+            { title: "分值", dataIndex: "value" }
+          ]}
+        />
+      </Card>
+      <Drawer
+        className="rule-editor-drawer"
+        title={`配置${title}`}
+        open={open}
+        onClose={closeEditor}
+        width="min(680px, 96vw)"
+        destroyOnClose
+        footer={
+          <div className="rule-drawer-footer">
+            <Button onClick={closeEditor}>取消</Button>
+            <Button type="primary" loading={saving} disabled={disabled} onClick={() => void save()}>保存配置</Button>
+          </div>
+        }
+      >
+        <section className="rule-form-section">
+          <OptionCheckboxes disabled={disabled} options={options} value={draftIds} onChange={setDraftIds} />
+        </section>
+      </Drawer>
+    </>
+  );
+}
+
 function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh: (text?: string) => Promise<void> }) {
-  const [optionIds, setOptionIds] = useState(config.person_option_ids);
   const [editingRule, setEditingRule] = useState<any | null>(null);
+  const [editingLimit, setEditingLimit] = useState<any | null>(null);
   const [ruleDrawerOpen, setRuleDrawerOpen] = useState(false);
+  const [limitDrawerOpen, setLimitDrawerOpen] = useState(false);
   const [reviewerUsers, setReviewerUsers] = useState<ReviewerUser[]>([]);
   const [reviewerUsersLoading, setReviewerUsersLoading] = useState(false);
   const [ruleSaving, setRuleSaving] = useState(false);
+  const [limitSaving, setLimitSaving] = useState(false);
   const [ruleForm] = Form.useForm();
   const [limitForm] = Form.useForm();
   const { message, modal } = AntApp.useApp();
-  const disabled = config.evaluation.archived;
+  const disabled = config.evaluation.archived || config.evaluation.tasks_generated;
   const scopeType = Form.useWatch("scope_type", ruleForm);
   const reviewerPositionId = Form.useWatch("reviewer_position_id", ruleForm);
   const selectedDepartmentIds = Form.useWatch("target_department_ids", ruleForm) || [];
@@ -364,13 +498,13 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
     setEditingRule(null);
     setReviewerUsers([]);
     ruleForm.resetFields();
-    ruleForm.setFieldsValue({ scope_type: "selected_departments", target_department_ids: [], weight: 1 });
+    ruleForm.setFieldsValue({ scope_type: "selected_departments", target_department_ids: [], weight: 100 });
     setRuleDrawerOpen(true);
   };
 
   const openRuleEditor = (rule: any) => {
     setEditingRule(rule);
-    ruleForm.setFieldsValue(rule);
+    ruleForm.setFieldsValue({ ...rule, weight: Number(rule.weight) * 100 });
     setRuleDrawerOpen(true);
     void loadReviewerUsers(rule.reviewer_position_id);
   };
@@ -386,7 +520,8 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
     const payload = {
       ...values,
       reviewer_user_id: values.reviewer_user_id || null,
-      target_department_ids: values.scope_type === "same_department" ? [] : values.target_department_ids
+      target_department_ids: values.scope_type === "same_department" ? [] : values.target_department_ids,
+      weight: Number(values.weight) / 100
     };
     setRuleSaving(true);
     try {
@@ -400,26 +535,57 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
     }
   };
 
+  const openNewLimit = () => {
+    setEditingLimit(null);
+    limitForm.resetFields();
+    setLimitDrawerOpen(true);
+  };
+
+  const openLimitEditor = (limit: any) => {
+    setEditingLimit(limit);
+    limitForm.setFieldsValue({
+      target_position_id: limit.target_position_id,
+      score_option_id: limit.score_option_id,
+      max_people: limit.max_people
+    });
+    setLimitDrawerOpen(true);
+  };
+
+  const closeLimitEditor = () => {
+    setLimitDrawerOpen(false);
+    setEditingLimit(null);
+    limitForm.resetFields();
+  };
+
+  const saveLimit = async (values: any) => {
+    setLimitSaving(true);
+    try {
+      const result = await evaluationsApi.savePersonLimit(config.evaluation.id, values);
+      closeLimitEditor();
+      await refresh(result.message);
+    } finally {
+      setLimitSaving(false);
+    }
+  };
+
   return (
     <Space direction="vertical" size={18} style={{ width: "100%" }}>
-      <Card title="人员评分选项">
-        <Space direction="vertical" style={{ width: "100%" }}>
-          <OptionCheckboxes disabled={disabled} options={config.score_options} value={optionIds} onChange={setOptionIds} />
-          <Button disabled={disabled} type="primary" onClick={async () => { const result = await evaluationsApi.savePersonOptions(config.evaluation.id, optionIds); await refresh(result.message); }}>保存人员评分选项</Button>
-        </Space>
-      </Card>
-      <Card title="人员评分限制">
-        <Form form={limitForm} layout="inline" disabled={disabled} onFinish={async (values) => { const result = await evaluationsApi.savePersonLimit(config.evaluation.id, values); limitForm.resetFields(); await refresh(result.message); }}>
-          <Form.Item name="target_position_id" rules={[{ required: true, message: "请选择被评职位。" }]}><Select placeholder="被评职位" style={{ width: 180 }} options={config.positions.map((p) => ({ value: p.id, label: p.name }))} /></Form.Item>
-          <Form.Item name="score_option_id" rules={[{ required: true, message: "请选择评分项。" }]}><Select placeholder="评分项" style={{ width: 180 }} options={config.score_options.map((o) => ({ value: o.id, label: o.name }))} /></Form.Item>
-          <Form.Item name="max_people"><InputNumber min={0} placeholder="最多人数" /></Form.Item>
-          <Button type="primary" htmlType="submit">保存限制</Button>
-        </Form>
-        <Table size="small" rowKey="id" dataSource={config.person_limits} pagination={tablePagination()} columns={[
+      <ScoreOptionsCard
+        title="人员评分选项"
+        disabled={disabled}
+        options={config.score_options}
+        selectedIds={config.person_option_ids}
+        onSave={async (ids) => {
+          const result = await evaluationsApi.savePersonOptions(config.evaluation.id, ids);
+          await refresh(result.message);
+        }}
+      />
+      <Card title="人员评分限制" extra={<Button type="primary" disabled={disabled} onClick={openNewLimit}>新增评分限制</Button>}>
+        <Table size="small" rowKey="id" dataSource={config.person_limits} pagination={false} columns={[
           { title: "被评职位", dataIndex: "target_position_name" },
           { title: "评分项", dataIndex: "score_option_name" },
           { title: "最多人数", dataIndex: "max_people" },
-          { title: "操作", render: (_, row) => <Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除限制", action: () => evaluationsApi.deletePersonLimit(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button> }
+          { title: "操作", render: (_, row) => <Space><Button size="small" disabled={disabled} onClick={() => openLimitEditor(row)}>编辑</Button><Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除限制", action: () => evaluationsApi.deletePersonLimit(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
         ]} />
       </Card>
       <Card title="人员考核规则" extra={<Button type="primary" disabled={disabled} onClick={openNewRule}>新增人员规则</Button>}>
@@ -429,12 +595,12 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
           { title: "被评职位", dataIndex: "target_position_name" },
           { title: "范围", width: 280, render: (_, row) => <DepartmentScopeSummary rule={row} departmentNames={departmentNames} /> },
           { title: "分组", dataIndex: "score_group", render: (v) => v || "-" },
-          { title: "权重", dataIndex: "weight" },
+          { title: "权重", dataIndex: "weight", render: (value) => formatPercent(value) },
           { title: "操作", render: (_, row) => <Space><Button size="small" disabled={disabled} onClick={() => openRuleEditor(row)}>编辑</Button><Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除人员规则", action: () => evaluationsApi.deletePersonRule(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
         ]} />
       </Card>
       <Drawer
-        className="person-rule-drawer"
+        className="person-rule-drawer rule-editor-drawer"
         title={editingRule ? "编辑人员规则" : "新增人员规则"}
         open={ruleDrawerOpen}
         onClose={closeRuleEditor}
@@ -443,7 +609,7 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
         footer={
           <div className="rule-drawer-footer">
             <Button onClick={closeRuleEditor}>取消</Button>
-            <Button type="primary" htmlType="submit" form="person-rule-form" loading={ruleSaving}>{editingRule ? "保存规则" : "新增规则"}</Button>
+            <Button type="primary" htmlType="submit" form="person-rule-form" loading={ruleSaving} disabled={disabled}>{editingRule ? "保存规则" : "新增规则"}</Button>
           </div>
         }
       >
@@ -514,8 +680,36 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
             <h3 id="statistics-section-title">统计设置</h3>
             <div className="rule-form-grid">
               <Form.Item name="score_group" label="统计分组"><Input placeholder="可选，例如：领导评价" /></Form.Item>
-              <Form.Item name="weight" label="权重" rules={[{ required: true, message: "请输入权重。" }]}><InputNumber min={0} max={1} step={0.01} precision={2} style={{ width: "100%" }} /></Form.Item>
+              <Form.Item name="weight" label="权重（%）" rules={[{ required: true, message: "请输入权重。" }]}><InputNumber min={0} max={100} step={1} precision={2} style={{ width: "100%" }} addonAfter="%" /></Form.Item>
             </div>
+          </section>
+        </Form>
+      </Drawer>
+      <Drawer
+        className="rule-editor-drawer"
+        title={editingLimit ? "编辑人员评分限制" : "新增人员评分限制"}
+        open={limitDrawerOpen}
+        onClose={closeLimitEditor}
+        width="min(680px, 96vw)"
+        destroyOnClose
+        footer={
+          <div className="rule-drawer-footer">
+            <Button onClick={closeLimitEditor}>取消</Button>
+            <Button type="primary" htmlType="submit" form="person-limit-form" loading={limitSaving} disabled={disabled}>{editingLimit ? "保存修改" : "新增限制"}</Button>
+          </div>
+        }
+      >
+        <Form id="person-limit-form" form={limitForm} layout="vertical" disabled={disabled} onFinish={saveLimit}>
+          <section className="rule-form-section">
+            <Form.Item name="target_position_id" label="被评职位" rules={[{ required: true, message: "请选择被评职位。" }]}>
+              <Select disabled={Boolean(editingLimit)} showSearch optionFilterProp="label" placeholder="请选择被评职位" options={config.positions.map((position) => ({ value: position.id, label: position.name }))} />
+            </Form.Item>
+            <Form.Item name="score_option_id" label="评分项" rules={[{ required: true, message: "请选择评分项。" }]}>
+              <Select disabled={Boolean(editingLimit)} showSearch optionFilterProp="label" placeholder="请选择评分项" options={config.score_options.map((option) => ({ value: option.id, label: option.name }))} />
+            </Form.Item>
+            <Form.Item name="max_people" label="最多人数" rules={[{ required: true, message: "请输入最多人数。" }]}>
+              <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+            </Form.Item>
           </section>
         </Form>
       </Drawer>
@@ -524,102 +718,320 @@ function PersonRulesTab({ config, refresh }: { config: EvaluationConfig; refresh
 }
 
 function DepartmentRulesTab({ config, refresh }: { config: EvaluationConfig; refresh: (text?: string) => Promise<void> }) {
-  const [optionIds, setOptionIds] = useState(config.department_option_ids);
   const [editingRule, setEditingRule] = useState<any | null>(null);
+  const [editingLimit, setEditingLimit] = useState<any | null>(null);
+  const [ruleDrawerOpen, setRuleDrawerOpen] = useState(false);
+  const [limitDrawerOpen, setLimitDrawerOpen] = useState(false);
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const [limitSaving, setLimitSaving] = useState(false);
   const [ruleForm] = Form.useForm();
   const [limitForm] = Form.useForm();
   const { modal } = AntApp.useApp();
-  const disabled = config.evaluation.archived;
+  const disabled = config.evaluation.archived || config.evaluation.tasks_generated;
+  const departmentNames = useMemo(
+    () => new Map(config.departments.map((department) => [department.id, department.name])),
+    [config.departments]
+  );
+
+  const openNewRule = () => {
+    setEditingRule(null);
+    ruleForm.setFieldsValue({ weight: 100 });
+    setRuleDrawerOpen(true);
+  };
+
+  const openRuleEditor = (rule: any) => {
+    setEditingRule(rule);
+    ruleForm.setFieldsValue({
+      reviewer_position_id: rule.reviewer_position_id,
+      target_department_ids: rule.target_department_ids || [rule.target_department_id],
+      weight: Number(rule.weight) * 100
+    });
+    setRuleDrawerOpen(true);
+  };
+
+  const closeRuleEditor = () => {
+    setRuleDrawerOpen(false);
+    setEditingRule(null);
+    ruleForm.resetFields();
+  };
+
+  const saveRule = async (values: any) => {
+    const payload = {
+      ...values,
+      target_department_ids: values.target_department_ids || [],
+      weight: Number(values.weight) / 100
+    };
+    setRuleSaving(true);
+    try {
+      const result = editingRule
+        ? await evaluationsApi.updateDepartmentRule(config.evaluation.id, editingRule.id, payload)
+        : await evaluationsApi.createDepartmentRule(config.evaluation.id, payload);
+      closeRuleEditor();
+      await refresh(result.message);
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const openNewLimit = () => {
+    setEditingLimit(null);
+    limitForm.resetFields();
+    setLimitDrawerOpen(true);
+  };
+
+  const openLimitEditor = (limit: any) => {
+    setEditingLimit(limit);
+    limitForm.setFieldsValue({ score_option_id: limit.score_option_id, max_count: limit.max_count });
+    setLimitDrawerOpen(true);
+  };
+
+  const closeLimitEditor = () => {
+    setLimitDrawerOpen(false);
+    setEditingLimit(null);
+    limitForm.resetFields();
+  };
+
+  const saveLimit = async (values: any) => {
+    setLimitSaving(true);
+    try {
+      const result = await evaluationsApi.saveDepartmentLimit(config.evaluation.id, values);
+      closeLimitEditor();
+      await refresh(result.message);
+    } finally {
+      setLimitSaving(false);
+    }
+  };
+
   return (
     <Space direction="vertical" size={18} style={{ width: "100%" }}>
-      <Card title="部门评分选项">
-        <Space direction="vertical" style={{ width: "100%" }}>
-          <OptionCheckboxes disabled={disabled} options={config.score_options} value={optionIds} onChange={setOptionIds} />
-          <Button disabled={disabled} type="primary" onClick={async () => { const result = await evaluationsApi.saveDepartmentOptions(config.evaluation.id, optionIds); await refresh(result.message); }}>保存部门评分选项</Button>
-        </Space>
-      </Card>
-      <Card title="部门评分限制">
-        <Form form={limitForm} layout="inline" disabled={disabled} onFinish={async (values) => { const result = await evaluationsApi.saveDepartmentLimit(config.evaluation.id, values); limitForm.resetFields(); await refresh(result.message); }}>
-          <Form.Item name="score_option_id" rules={[{ required: true, message: "请选择评分项。" }]}><Select placeholder="评分项" style={{ width: 180 }} options={config.score_options.map((o) => ({ value: o.id, label: o.name }))} /></Form.Item>
-          <Form.Item name="max_count"><InputNumber min={0} placeholder="最多数量" /></Form.Item>
-          <Button type="primary" htmlType="submit">保存限制</Button>
-        </Form>
-        <Table size="small" rowKey="id" dataSource={config.department_limits} pagination={tablePagination()} columns={[
+      <ScoreOptionsCard
+        title="部门评分选项"
+        disabled={disabled}
+        options={config.score_options}
+        selectedIds={config.department_option_ids}
+        onSave={async (ids) => {
+          const result = await evaluationsApi.saveDepartmentOptions(config.evaluation.id, ids);
+          await refresh(result.message);
+        }}
+      />
+      <Card title="部门评分限制" extra={<Button type="primary" disabled={disabled} onClick={openNewLimit}>新增评分限制</Button>}>
+        <Table size="small" rowKey="id" dataSource={config.department_limits} pagination={false} columns={[
           { title: "评分项", dataIndex: "score_option_name" },
           { title: "最多数量", dataIndex: "max_count" },
-          { title: "操作", render: (_, row) => <Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除限制", action: () => evaluationsApi.deleteDepartmentLimit(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button> }
+          { title: "操作", render: (_, row) => <Space><Button size="small" disabled={disabled} onClick={() => openLimitEditor(row)}>编辑</Button><Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除限制", action: () => evaluationsApi.deleteDepartmentLimit(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
         ]} />
       </Card>
-      <Card title="部门考核规则">
-        <Form form={ruleForm} layout="vertical" disabled={disabled} onFinish={async (values) => {
-          const payload = { ...values, target_department_ids: values.target_department_ids || (values.target_department_id ? [values.target_department_id] : []) };
-          const result = editingRule
-            ? await evaluationsApi.updateDepartmentRule(config.evaluation.id, editingRule.id, payload)
-            : await evaluationsApi.createDepartmentRule(config.evaluation.id, payload);
-          setEditingRule(null);
-          ruleForm.resetFields();
-          await refresh(result.message);
-        }}>
-          <div className="form-grid">
-            <Form.Item name="reviewer_position_id" label="评分人职位" rules={[{ required: true, message: "请选择评分人职位。" }]}><Select options={config.positions.map((p) => ({ value: p.id, label: p.name }))} /></Form.Item>
+      <Card title="部门考核规则" extra={<Button type="primary" disabled={disabled} onClick={openNewRule}>新增部门规则</Button>}>
+        <Table size="small" rowKey="id" dataSource={config.department_rules} pagination={false} columns={[
+          { title: "评分人职位", dataIndex: "reviewer_position_name" },
+          { title: "被评部门", render: (_, row) => <DepartmentNamesSummary rule={row} departmentNames={departmentNames} /> },
+          { title: "权重", dataIndex: "weight", render: (value) => formatPercent(value) },
+          { title: "操作", render: (_, row) => <Space><Button size="small" disabled={disabled} onClick={() => openRuleEditor(row)}>编辑</Button><Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除部门规则", content: "将同时删除该规则中的全部被评部门。", action: () => evaluationsApi.deleteDepartmentRule(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
+        ]} />
+      </Card>
+      <Drawer
+        className="rule-editor-drawer"
+        title={editingRule ? "编辑部门规则" : "新增部门规则"}
+        open={ruleDrawerOpen}
+        onClose={closeRuleEditor}
+        width="min(680px, 96vw)"
+        destroyOnClose
+        footer={
+          <div className="rule-drawer-footer">
+            <Button onClick={closeRuleEditor}>取消</Button>
+            <Button type="primary" htmlType="submit" form="department-rule-form" loading={ruleSaving} disabled={disabled}>{editingRule ? "保存修改" : "新增规则"}</Button>
+          </div>
+        }
+      >
+        <Form id="department-rule-form" form={ruleForm} layout="vertical" disabled={disabled} onFinish={saveRule}>
+          <section className="rule-form-section">
+            <Form.Item name="reviewer_position_id" label="评分人职位" rules={[{ required: true, message: "请选择评分人职位。" }]}>
+              <Select showSearch optionFilterProp="label" placeholder="请选择评分人职位" options={config.positions.map((position) => ({ value: position.id, label: position.name }))} />
+            </Form.Item>
             <Form.Item name="target_department_ids" label="被评部门" rules={[{ required: true, message: "请选择被评部门。" }]}>
               <DepartmentMultiTreeSelect departments={config.departments} placeholder="搜索或选择被评部门" />
             </Form.Item>
-            <Form.Item name="weight" label="权重" rules={[{ required: true, message: "请输入权重。" }]}><InputNumber min={0} max={1} step={0.01} style={{ width: "100%" }} /></Form.Item>
-          </div>
-          <Space>
-            <Button type="primary" htmlType="submit">{editingRule ? "保存部门规则" : "新增部门规则"}</Button>
-            {editingRule ? <Button onClick={() => { setEditingRule(null); ruleForm.resetFields(); }}>取消编辑</Button> : null}
-          </Space>
+            <Form.Item name="weight" label="权重（%）" rules={[{ required: true, message: "请输入权重。" }]}>
+              <InputNumber min={0} max={100} step={1} precision={2} style={{ width: "100%" }} addonAfter="%" />
+            </Form.Item>
+          </section>
         </Form>
-        <Table size="small" rowKey="id" dataSource={config.department_rules} pagination={tablePagination()} columns={[
-          { title: "评分人职位", dataIndex: "reviewer_position_name" },
-          { title: "被评部门", dataIndex: "target_department_name" },
-          { title: "权重", dataIndex: "weight" },
-          { title: "操作", render: (_, row) => <Space><Button size="small" disabled={disabled} onClick={() => { setEditingRule(row); ruleForm.setFieldsValue({ ...row, target_department_ids: [row.target_department_id] }); }}>编辑</Button><Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除部门规则", action: () => evaluationsApi.deleteDepartmentRule(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
-        ]} />
-      </Card>
+      </Drawer>
+      <Drawer
+        className="rule-editor-drawer"
+        title={editingLimit ? "编辑部门评分限制" : "新增部门评分限制"}
+        open={limitDrawerOpen}
+        onClose={closeLimitEditor}
+        width="min(680px, 96vw)"
+        destroyOnClose
+        footer={
+          <div className="rule-drawer-footer">
+            <Button onClick={closeLimitEditor}>取消</Button>
+            <Button type="primary" htmlType="submit" form="department-limit-form" loading={limitSaving} disabled={disabled}>{editingLimit ? "保存修改" : "新增限制"}</Button>
+          </div>
+        }
+      >
+        <Form id="department-limit-form" form={limitForm} layout="vertical" disabled={disabled} onFinish={saveLimit}>
+          <section className="rule-form-section">
+            <Form.Item name="score_option_id" label="评分项" rules={[{ required: true, message: "请选择评分项。" }]}>
+              <Select disabled={Boolean(editingLimit)} showSearch optionFilterProp="label" placeholder="请选择评分项" options={config.score_options.map((option) => ({ value: option.id, label: option.name }))} />
+            </Form.Item>
+            <Form.Item name="max_count" label="最多数量" rules={[{ required: true, message: "请输入最多数量。" }]}>
+              <InputNumber min={0} precision={0} style={{ width: "100%" }} />
+            </Form.Item>
+          </section>
+        </Form>
+      </Drawer>
     </Space>
   );
 }
 
 function DepartmentShareTab({ config, refresh }: { config: EvaluationConfig; refresh: (text?: string) => Promise<void> }) {
   const [shareForm] = Form.useForm();
+  const [editingShareRule, setEditingShareRule] = useState<any | null>(null);
+  const [shareDrawerOpen, setShareDrawerOpen] = useState(false);
+  const [shareSaving, setShareSaving] = useState(false);
+  const [editingManualScore, setEditingManualScore] = useState<any | null>(null);
+  const [manualDrawerOpen, setManualDrawerOpen] = useState(false);
+  const [manualSaving, setManualSaving] = useState(false);
   const [manualForm] = Form.useForm();
   const { modal } = AntApp.useApp();
-  const disabled = config.evaluation.archived;
+  const shareDisabled = config.evaluation.archived || config.evaluation.tasks_generated;
+  const manualDisabled = config.evaluation.archived;
   const departmentTree = useMemo(() => buildDepartmentTree(config.departments), [config.departments]);
+
+  const openNewShareRule = () => {
+    setEditingShareRule(null);
+    shareForm.setFieldsValue({ weight: 20 });
+    setShareDrawerOpen(true);
+  };
+
+  const openShareRuleEditor = (rule: any) => {
+    setEditingShareRule(rule);
+    shareForm.setFieldsValue({ target_position_id: rule.target_position_id, weight: Number(rule.weight) * 100 });
+    setShareDrawerOpen(true);
+  };
+
+  const closeShareRuleEditor = () => {
+    setShareDrawerOpen(false);
+    setEditingShareRule(null);
+    shareForm.resetFields();
+  };
+
+  const saveShareRule = async (values: any) => {
+    setShareSaving(true);
+    try {
+      const result = await evaluationsApi.saveShareRule(config.evaluation.id, {
+        ...values,
+        weight: Number(values.weight) / 100
+      });
+      closeShareRuleEditor();
+      await refresh(result.message);
+    } finally {
+      setShareSaving(false);
+    }
+  };
+
+  const openNewManualScore = () => {
+    setEditingManualScore(null);
+    manualForm.resetFields();
+    setManualDrawerOpen(true);
+  };
+
+  const openManualScoreEditor = (score: any) => {
+    setEditingManualScore(score);
+    manualForm.setFieldsValue({ department_id: score.department_id, score: score.score });
+    setManualDrawerOpen(true);
+  };
+
+  const closeManualScoreEditor = () => {
+    setManualDrawerOpen(false);
+    setEditingManualScore(null);
+    manualForm.resetFields();
+  };
+
+  const saveManualScore = async (values: any) => {
+    setManualSaving(true);
+    try {
+      const result = await evaluationsApi.saveManualScore(config.evaluation.id, values);
+      closeManualScoreEditor();
+      await refresh(result.message);
+    } finally {
+      setManualSaving(false);
+    }
+  };
+
   return (
     <Space direction="vertical" size={18} style={{ width: "100%" }}>
-      <Card title="部门得分占比规则">
-        <Form form={shareForm} layout="inline" disabled={disabled} onFinish={async (values) => { const result = await evaluationsApi.saveShareRule(config.evaluation.id, values); shareForm.resetFields(); await refresh(result.message); }}>
-          <Form.Item name="target_position_id" rules={[{ required: true, message: "请选择适用职位。" }]}><Select placeholder="适用职位" style={{ width: 200 }} options={config.positions.map((p) => ({ value: p.id, label: p.name }))} /></Form.Item>
-          <Form.Item name="weight" rules={[{ required: true, message: "请输入权重。" }]}><InputNumber min={0} max={1} step={0.01} placeholder="权重" /></Form.Item>
-          <Button type="primary" htmlType="submit">保存占比</Button>
-        </Form>
-        <Table size="small" rowKey="id" dataSource={config.share_rules} pagination={tablePagination()} columns={[
+      <Card title="部门得分占比规则" extra={<Button type="primary" disabled={shareDisabled} onClick={openNewShareRule}>新增占比规则</Button>}>
+        <Table size="small" rowKey="id" dataSource={config.share_rules} pagination={false} columns={[
           { title: "适用职位", dataIndex: "target_position_name" },
-          { title: "权重", dataIndex: "weight" },
-          { title: "操作", render: (_, row) => <Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除占比规则", action: () => evaluationsApi.deleteShareRule(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button> }
+          { title: "部门得分占比", dataIndex: "weight", render: (value) => formatPercent(value) },
+          { title: "操作", render: (_, row) => <Space><Button size="small" disabled={shareDisabled} onClick={() => openShareRuleEditor(row)}>编辑</Button><Button danger size="small" disabled={shareDisabled} onClick={() => confirmDeletion(modal, { title: "删除占比规则", action: () => evaluationsApi.deleteShareRule(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
         ]} />
       </Card>
-      <Card title="手动部门得分">
-        <Form form={manualForm} layout="inline" disabled={disabled} onFinish={async (values) => { const result = await evaluationsApi.saveManualScore(config.evaluation.id, values); manualForm.resetFields(); await refresh(result.message); }}>
-          <Form.Item name="department_id" rules={[{ required: true, message: "请选择部门。" }]}><TreeSelect placeholder="请选择部门" style={{ width: 220 }} showSearch treeNodeFilterProp="title" treeData={departmentTree} treeDefaultExpandAll /></Form.Item>
-          <Form.Item name="score" rules={[{ required: true, message: "请输入得分。" }]}><InputNumber min={0} max={100} placeholder="得分" /></Form.Item>
-          <Button type="primary" htmlType="submit">保存得分</Button>
+      <Drawer
+        className="rule-editor-drawer"
+        title={editingShareRule ? "编辑占比规则" : "新增占比规则"}
+        open={shareDrawerOpen}
+        onClose={closeShareRuleEditor}
+        width="min(680px, 96vw)"
+        destroyOnClose
+        footer={
+          <div className="rule-drawer-footer">
+            <Button onClick={closeShareRuleEditor}>取消</Button>
+            <Button type="primary" htmlType="submit" form="department-share-form" loading={shareSaving} disabled={shareDisabled}>{editingShareRule ? "保存修改" : "新增规则"}</Button>
+          </div>
+        }
+      >
+        <Form id="department-share-form" form={shareForm} layout="vertical" disabled={shareDisabled} onFinish={saveShareRule}>
+          <section className="rule-form-section">
+            <Form.Item name="target_position_id" label="适用职位" rules={[{ required: true, message: "请选择适用职位。" }]}>
+              <Select disabled={Boolean(editingShareRule)} showSearch optionFilterProp="label" placeholder="请选择适用职位" options={config.positions.map((position) => ({ value: position.id, label: position.name }))} />
+            </Form.Item>
+            <Form.Item name="weight" label="部门得分占比（%）" rules={[{ required: true, message: "请输入部门得分占比。" }]}>
+              <InputNumber min={0} max={100} step={1} precision={2} style={{ width: "100%" }} addonAfter="%" />
+            </Form.Item>
+          </section>
         </Form>
-        <Table size="small" rowKey="id" dataSource={config.manual_scores} pagination={tablePagination()} columns={[
+      </Drawer>
+      <Card title="手动部门得分" extra={<Button type="primary" disabled={manualDisabled} onClick={openNewManualScore}>新增部门得分</Button>}>
+        <Table size="small" rowKey="id" dataSource={config.manual_scores} pagination={false} columns={[
           { title: "部门", dataIndex: "department_name" },
           { title: "手动得分", dataIndex: "score" },
-          { title: "操作", render: (_, row) => <Button danger size="small" disabled={disabled} onClick={() => confirmDeletion(modal, { title: "删除手动得分", action: () => evaluationsApi.deleteManualScore(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button> }
+          { title: "操作", render: (_, row) => <Space><Button size="small" disabled={manualDisabled} onClick={() => openManualScoreEditor(row)}>编辑</Button><Button danger size="small" disabled={manualDisabled} onClick={() => confirmDeletion(modal, { title: "删除手动得分", action: () => evaluationsApi.deleteManualScore(config.evaluation.id, row.id), onSuccess: (result) => refresh(result.message) })}>删除</Button></Space> }
         ]} />
       </Card>
+      <Drawer
+        className="rule-editor-drawer"
+        title={editingManualScore ? "编辑手动部门得分" : "新增手动部门得分"}
+        open={manualDrawerOpen}
+        onClose={closeManualScoreEditor}
+        width="min(680px, 96vw)"
+        destroyOnClose
+        footer={
+          <div className="rule-drawer-footer">
+            <Button onClick={closeManualScoreEditor}>取消</Button>
+            <Button type="primary" htmlType="submit" form="manual-department-score-form" loading={manualSaving} disabled={manualDisabled}>{editingManualScore ? "保存修改" : "新增得分"}</Button>
+          </div>
+        }
+      >
+        <Form id="manual-department-score-form" form={manualForm} layout="vertical" disabled={manualDisabled} onFinish={saveManualScore}>
+          <section className="rule-form-section">
+            <Form.Item name="department_id" label="部门" rules={[{ required: true, message: "请选择部门。" }]}>
+              <TreeSelect disabled={Boolean(editingManualScore)} placeholder="请选择部门" showSearch treeNodeFilterProp="title" treeData={departmentTree} treeDefaultExpandAll />
+            </Form.Item>
+            <Form.Item name="score" label="得分" rules={[{ required: true, message: "请输入得分。" }]}>
+              <InputNumber min={0} max={100} precision={2} style={{ width: "100%" }} />
+            </Form.Item>
+          </section>
+        </Form>
+      </Drawer>
     </Space>
   );
 }
 
-function ReviewSubmissionsTab({ evaluationId }: { evaluationId: number }) {
+function ReviewSubmissionsTab({ evaluationId, canViewDetails }: { evaluationId: number; canViewDetails: boolean }) {
   const [data, setData] = useState<any>(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -696,7 +1108,7 @@ function ReviewSubmissionsTab({ evaluationId }: { evaluationId: number }) {
             title: "操作",
             render: (_: unknown, row: any) => (
               <Space wrap>
-                <Button size="small" onClick={() => requestDetails(row.reviewer_id)}>查看评分详情</Button>
+                {canViewDetails ? <Button size="small" onClick={() => requestDetails(row.reviewer_id)}>查看评分详情</Button> : null}
                 <Button size="small" disabled={!row.can_reopen} onClick={async () => { const result = await evaluationsApi.reopenSubmission(evaluationId, row.reviewer_id); message.success(result.message); await load(); }}>允许修改</Button>
                 <Button size="small" disabled={!row.can_cancel} onClick={async () => { const result = await evaluationsApi.cancelSubmission(evaluationId, row.reviewer_id); message.success(result.message); await load(); }}>取消允许</Button>
               </Space>
@@ -758,7 +1170,7 @@ function ReviewSubmissionsTab({ evaluationId }: { evaluationId: number }) {
                 { title: "分值", dataIndex: "score_value", width: 80 },
                 { title: "权重", dataIndex: "weight", width: 80 },
                 { title: "加权分", dataIndex: "weighted_score", width: 90, render: (value) => Number(value).toFixed(2) },
-                { title: "提交时间", dataIndex: "created_at", width: 170, render: (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "-" }
+                { title: "提交时间", dataIndex: "created_at", width: 210, render: (value) => <span className="date-time-text">{formatDateTime(value)}</span> }
               ]}
             />
           </>
@@ -891,7 +1303,7 @@ function AuditPreview() {
         { title: "操作人", dataIndex: "actor_name" },
         { title: "动作", dataIndex: "action" },
         { title: "详情", dataIndex: "detail" },
-        { title: "时间", dataIndex: "created_at" }
+        { title: "时间", dataIndex: "created_at", width: 210, render: (value) => <span className="date-time-text">{formatDateTime(value)}</span> }
       ]}
     />
   );

@@ -9,7 +9,7 @@ from openpyxl import load_workbook  # noqa: E402
 
 from app.database import Base, SessionLocal, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import ArchivedDepartmentScore, ArchivedPersonScore, Department, Evaluation, EvaluationDepartmentRule, EvaluationDepartmentScoreOption, EvaluationPersonRule, EvaluationScoreOption, Position, ScoreOption, User  # noqa: E402
+from app.models import ArchivedDepartmentScore, ArchivedPersonScore, Department, Evaluation, EvaluationDepartmentRule, EvaluationDepartmentScoreOption, EvaluationDepartmentScoreShareRule, EvaluationPersonRule, EvaluationScoreOption, Position, ScoreOption, User  # noqa: E402
 from app.security import hash_password  # noqa: E402
 
 
@@ -48,23 +48,56 @@ def test_api_evaluation_generation_and_user_submission_flow():
     evaluation = admin.post("/api/evaluations", json={"year": 2026, "name": "2026 年度考核"}).json()
 
     db = SessionLocal()
+    person_rule = EvaluationPersonRule(evaluation_id=evaluation["id"], reviewer_position_id=director["id"], target_position_id=staff["id"], weight=0.2)
+    department_rule = EvaluationDepartmentRule(evaluation_id=evaluation["id"], reviewer_position_id=director["id"], target_department_id=other_dept["id"], weight=0.3)
+    share_rule = EvaluationDepartmentScoreShareRule(evaluation_id=evaluation["id"], target_position_id=staff["id"], weight=0.1)
     db.add_all([
         EvaluationScoreOption(evaluation_id=evaluation["id"], score_option_id=excellent["id"], sort_order=0),
         EvaluationScoreOption(evaluation_id=evaluation["id"], score_option_id=qualified["id"], sort_order=1),
         EvaluationDepartmentScoreOption(evaluation_id=evaluation["id"], score_option_id=excellent["id"], sort_order=0),
         EvaluationDepartmentScoreOption(evaluation_id=evaluation["id"], score_option_id=qualified["id"], sort_order=1),
-        EvaluationPersonRule(evaluation_id=evaluation["id"], reviewer_position_id=director["id"], target_position_id=staff["id"], weight=0.2),
-        EvaluationDepartmentRule(evaluation_id=evaluation["id"], reviewer_position_id=director["id"], target_department_id=other_dept["id"], weight=0.3),
+        person_rule,
+        department_rule,
+        share_rule,
     ])
     db.commit()
+    person_rule_id = person_rule.id
+    department_rule_id = department_rule.id
+    share_rule_id = share_rule.id
     db.close()
 
     generated = admin.post(f"/api/evaluations/{evaluation['id']}/generate-tasks").json()
+    locked_requests = [
+        admin.delete(f"/api/evaluations/{evaluation['id']}/person-rules/{person_rule_id}"),
+        admin.delete(f"/api/evaluations/{evaluation['id']}/department-rules/{department_rule_id}"),
+        admin.delete(f"/api/evaluations/{evaluation['id']}/share-rules/{share_rule_id}"),
+        admin.post(
+            f"/api/evaluations/{evaluation['id']}/share-rules",
+            json={"target_position_id": staff["id"], "weight": 0.25},
+        ),
+    ]
+    assert all(response.status_code == 409 for response in locked_requests)
+    assert all("请先清空任务" in response.json()["detail"] for response in locked_requests)
+    manual_saved = admin.post(
+        f"/api/evaluations/{evaluation['id']}/manual-department-scores",
+        json={"department_id": dept["id"], "score": 90},
+    )
+    assert manual_saved.status_code == 200
+    manual_score_id = admin.get(f"/api/evaluations/{evaluation['id']}/config").json()["manual_scores"][0]["id"]
+    assert admin.delete(
+        f"/api/evaluations/{evaluation['id']}/manual-department-scores/{manual_score_id}"
+    ).status_code == 200
     opened = admin.post(f"/api/evaluations/{evaluation['id']}/toggle-open").json()
     assert "已生成 2 个考核任务" in generated["message"]
     assert opened["evaluation"]["is_open"] is True
 
     user = login("reviewer", "123456")
+    my_evaluations = user.get("/api/app/evaluations")
+    assert my_evaluations.status_code == 200
+    assert my_evaluations.json()["items"][0]["status"] == "pending"
+    assert my_evaluations.json()["items"][0]["id"] == evaluation["id"]
+    selected_work = user.get(f"/api/app/evaluations/{evaluation['id']}")
+    assert selected_work.status_code == 200
     work = user.get("/api/app/evaluation").json()
     task_ids = [task["id"] for group in work["task_groups"] for task in group["tasks"]]
     assert work["evaluation"]["name"] == "2026 年度考核"
@@ -78,6 +111,11 @@ def test_api_evaluation_generation_and_user_submission_flow():
     submit = user.post("/api/app/evaluation/submit", json={"choices": {str(task_id): qualified["id"] for task_id in task_ids}})
     assert submit.status_code == 200
     assert submit.json()["message"] == "评分已提交。"
+
+    submission = user.get(f"/api/app/evaluations/{evaluation['id']}/submission")
+    assert submission.status_code == 200
+    assert submission.json()["task_count"] == 2
+    assert {item["option_name"] for item in submission.json()["items"]} == {"称职"}
 
     after_submit = user.get("/api/app/evaluation").json()
     assert after_submit["submitted"] is True
@@ -118,6 +156,7 @@ def test_api_evaluation_generation_and_user_submission_flow():
     assert cleared.json()["evaluation"]["total_tasks"] == 0
     assert cleared.json()["evaluation"]["tasks_generated"] is False
     assert cleared.json()["evaluation"]["is_open"] is False
+    assert admin.delete(f"/api/evaluations/{evaluation['id']}/share-rules/{share_rule_id}").status_code == 200
 
 
 def test_same_year_batches_copy_and_single_open_evaluation():
@@ -183,6 +222,49 @@ def test_person_rule_scope_is_normalized_and_validated():
     config = admin.get(f"/api/evaluations/{evaluation['id']}/config").json()
     assert config["person_rules"][0]["scope_type"] == "same_department"
     assert config["person_rules"][0]["target_department_ids"] == []
+
+
+def test_multi_department_rule_is_displayed_and_managed_as_one_group():
+    admin = login("admin", "admin123")
+    departments = [
+        admin.post("/api/departments", json={"name": name}).json()
+        for name in ("办公室", "监管科", "消保科")
+    ]
+    position = admin.post("/api/positions", json={"name": "部门主要负责人"}).json()
+    evaluation = admin.post("/api/evaluations", json={"year": 2028, "name": "部门规则分组测试"}).json()
+
+    created = admin.post(
+        f"/api/evaluations/{evaluation['id']}/department-rules",
+        json={
+            "reviewer_position_id": position["id"],
+            "target_department_ids": [item["id"] for item in departments],
+            "weight": 1,
+        },
+    )
+    assert created.status_code == 200
+    config = admin.get(f"/api/evaluations/{evaluation['id']}/config").json()
+    assert len(config["department_rules"]) == 1
+    group = config["department_rules"][0]
+    assert group["target_department_ids"] == [item["id"] for item in departments]
+    assert group["target_department_name"] == "办公室、监管科等3个部门"
+
+    updated = admin.put(
+        f"/api/evaluations/{evaluation['id']}/department-rules/{group['id']}",
+        json={
+            "reviewer_position_id": position["id"],
+            "target_department_ids": [departments[1]["id"], departments[2]["id"]],
+            "weight": 0.5,
+        },
+    )
+    assert updated.status_code == 200
+    updated_rules = admin.get(f"/api/evaluations/{evaluation['id']}/config").json()["department_rules"]
+    assert len(updated_rules) == 1
+    assert updated_rules[0]["target_department_ids"] == [departments[1]["id"], departments[2]["id"]]
+    assert updated_rules[0]["target_department_name"] == "监管科、消保科"
+
+    deleted = admin.delete(f"/api/evaluations/{evaluation['id']}/department-rules/{updated_rules[0]['id']}")
+    assert deleted.status_code == 200
+    assert admin.get(f"/api/evaluations/{evaluation['id']}/config").json()["department_rules"] == []
 
 
 def test_archived_scores_can_be_exported_as_excel():

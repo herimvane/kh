@@ -67,13 +67,31 @@ def _validate_migrated_schema(connection) -> None:
     if "evaluations" not in inspector.get_table_names():
         return
     columns = {column["name"] for column in inspector.get_columns("evaluations")}
-    missing = {"sequence", "open_slot"} - columns
+    missing = {
+        "sequence",
+        "open_slot",
+        "scope_key",
+        "owner_department_id",
+        "owner_department_name_snapshot",
+        "created_by_id",
+    } - columns
     if missing:
         names = ", ".join(sorted(missing))
         raise RuntimeError(
             "数据库迁移版本与实际表结构不一致：evaluations 表缺少字段 "
             f"{names}。请确认 migrations 目录完整后重新执行 alembic upgrade head。"
         )
+    if "evaluation_department_rules" in inspector.get_table_names():
+        rule_columns = {
+            column["name"]
+            for column in inspector.get_columns("evaluation_department_rules")
+        }
+        if "group_key" not in rule_columns:
+            raise RuntimeError(
+                "数据库迁移版本与实际表结构不一致："
+                "evaluation_department_rules 表缺少 group_key 字段。"
+                "请执行 alembic upgrade head。"
+            )
 
 
 def init_db() -> None:

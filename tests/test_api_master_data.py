@@ -114,6 +114,69 @@ def test_new_user_uses_default_password_and_admin_reset_forces_password_change()
     ).status_code == 200
 
 
+def test_admin_user_cannot_have_person_department_or_position():
+    client = admin_client()
+    department = client.post("/api/departments", json={"name": "办公室"}).json()
+    position = client.post("/api/positions", json={"name": "负责人"}).json()
+
+    created = client.post(
+        "/api/users",
+        json={
+            "username": "scoped-admin",
+            "full_name": "部门管理员",
+            "role": "admin",
+            "department_id": department["id"],
+            "position_id": position["id"],
+            "admin_scope_department_id": department["id"],
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["department_id"] is None
+    assert created.json()["position_id"] is None
+    assert created.json()["admin_scope_department_id"] == department["id"]
+
+    ordinary_user = client.post(
+        "/api/users",
+        json={
+            "username": "promoted-user",
+            "full_name": "待提升人员",
+            "department_id": department["id"],
+            "position_id": position["id"],
+        },
+    ).json()
+    promoted = client.put(
+        f"/api/users/{ordinary_user['id']}",
+        json={
+            "username": ordinary_user["username"],
+            "full_name": ordinary_user["full_name"],
+            "role": "admin",
+            "is_active": True,
+            "department_id": department["id"],
+            "position_id": position["id"],
+            "admin_scope_department_id": department["id"],
+        },
+    )
+    assert promoted.status_code == 200
+    assert promoted.json()["department_id"] is None
+    assert promoted.json()["position_id"] is None
+
+
+def test_duplicate_username_returns_clear_conflict_message():
+    client = admin_client()
+    first = client.post(
+        "/api/users",
+        json={"username": "duplicate-user", "full_name": "第一个用户"},
+    )
+    duplicate = client.post(
+        "/api/users",
+        json={"username": "duplicate-user", "full_name": "第二个用户"},
+    )
+
+    assert first.status_code == 201
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "用户名已存在。"
+
+
 def test_referenced_department_and_position_delete_are_blocked():
     db = SessionLocal()
     dept = Department(name="办公室", sort_order=1)
@@ -176,3 +239,17 @@ def test_department_name_is_unique_within_its_parent_only():
     assert second_child.status_code == 201
     assert duplicate_child.status_code == 409
     assert duplicate_child.json()["detail"] == "同一上级部门下已存在同名部门。"
+
+    first_user = client.post(
+        "/api/users",
+        json={"username": "first-branch-user", "full_name": "甲部门人员", "department_id": first_child.json()["id"]},
+    )
+    second_user = client.post(
+        "/api/users",
+        json={"username": "second-branch-user", "full_name": "乙部门人员", "department_id": second_child.json()["id"]},
+    )
+    users = client.get("/api/users?q=部门人员&page=1").json()["items"]
+
+    assert first_user.json()["department_name"] == "甲部门 / 综合科"
+    assert second_user.json()["department_name"] == "乙部门 / 综合科"
+    assert {item["department_name"] for item in users} == {"甲部门 / 综合科", "乙部门 / 综合科"}

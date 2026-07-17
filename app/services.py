@@ -611,6 +611,7 @@ def archived_rule_snapshot_rows(db: Session, evaluation: Evaluation) -> list[Arc
         title="部门考核规则",
         payload=json.dumps([
             {
+                "group_key": rule.group_key,
                 "reviewer_position": rule.reviewer_position.name,
                 "source_reviewer_position_id": rule.reviewer_position_id,
                 "target_department": rule.target_department.name,
@@ -657,8 +658,21 @@ def archive_evaluation(db: Session, evaluation: Evaluation) -> None:
 
     result = calculate_evaluation_scores(db, evaluation)
 
+    reviewer_ids = {detail["reviewer_id"] for detail in result["details"]}
+    identity_by_reviewer = dict(
+        db.execute(
+            select(User.id, User.identity_key).where(User.id.in_(reviewer_ids))
+        ).all()
+    ) if reviewer_ids else {}
     for detail in result["details"]:
-        db.add(ArchivedVoteDetail(evaluation_id=evaluation.id, **detail))
+        db.add(ArchivedVoteDetail(
+            evaluation_id=evaluation.id,
+            reviewer_identity_key=identity_by_reviewer.get(
+                detail["reviewer_id"],
+                f"legacy-user-{detail['reviewer_id']}",
+            ),
+            **detail,
+        ))
 
     for person in result["people"]:
         db.add(ArchivedPersonScore(evaluation_id=evaluation.id, **person))
@@ -682,7 +696,9 @@ def archive_evaluation(db: Session, evaluation: Evaluation) -> None:
         db.add(ArchivedSubmission(
             evaluation_id=evaluation.id,
             reviewer_id=reviewer_id,
+            reviewer_identity_key=reviewer.identity_key,
             reviewer_name=reviewer.full_name,
+            reviewer_department_id=reviewer.department_id,
             department_name=reviewer.department.name if reviewer.department else "",
             position_name=reviewer.position.name if reviewer.position else "",
             task_count=len(reviewer_tasks),

@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -49,11 +50,14 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(20), default="user")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    identity_key: Mapped[str] = mapped_column(String(36), unique=True, index=True, default=lambda: str(uuid4()))
     department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"), nullable=True)
+    admin_scope_department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id"), nullable=True, index=True)
     position_id: Mapped[int | None] = mapped_column(ForeignKey("positions.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    department: Mapped[Department | None] = relationship()
+    department: Mapped[Department | None] = relationship(foreign_keys=[department_id])
+    admin_scope_department: Mapped[Department | None] = relationship(foreign_keys=[admin_scope_department_id])
     position: Mapped[Position | None] = relationship()
 
 
@@ -80,19 +84,26 @@ class ScoreOption(Base):
 class Evaluation(Base):
     __tablename__ = "evaluations"
     __table_args__ = (
-        UniqueConstraint("year", "sequence", name="uq_evaluations_year_sequence"),
-        UniqueConstraint("open_slot", name="uq_evaluations_single_open"),
+        UniqueConstraint("scope_key", "year", "sequence", name="uq_evaluations_scope_year_sequence"),
+        UniqueConstraint("scope_key", "open_slot", name="uq_evaluations_scope_open"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(160), default="")
     year: Mapped[int] = mapped_column(Integer, index=True)
     sequence: Mapped[int] = mapped_column(Integer, default=1)
+    scope_key: Mapped[str] = mapped_column(String(64), default="GLOBAL", index=True)
+    owner_department_id: Mapped[int | None] = mapped_column(ForeignKey("departments.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_department_name_snapshot: Mapped[str] = mapped_column(String(120), default="全局")
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     is_open: Mapped[bool] = mapped_column(Boolean, default=False)
     open_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tasks_generated: Mapped[bool] = mapped_column(Boolean, default=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    owner_department: Mapped[Department | None] = relationship(foreign_keys=[owner_department_id])
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
 
 
 class EvaluationScoreOption(Base):
@@ -200,6 +211,7 @@ class EvaluationDepartmentRule(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     evaluation_id: Mapped[int] = mapped_column(ForeignKey("evaluations.id", ondelete="CASCADE"))
+    group_key: Mapped[str] = mapped_column(String(36), default=lambda: str(uuid4()), index=True)
     reviewer_position_id: Mapped[int] = mapped_column(ForeignKey("positions.id"))
     target_department_id: Mapped[int] = mapped_column(ForeignKey("departments.id"))
     weight: Mapped[Decimal] = mapped_column(Numeric(12, 4))
@@ -343,6 +355,7 @@ class ArchivedVoteDetail(Base):
     evaluation_id: Mapped[int] = mapped_column(ForeignKey("evaluations.id", ondelete="CASCADE"))
     task_type: Mapped[str] = mapped_column(String(20))
     reviewer_id: Mapped[int] = mapped_column(Integer)
+    reviewer_identity_key: Mapped[str] = mapped_column(String(64), default="")
     reviewer_name: Mapped[str] = mapped_column(String(120))
     target_id: Mapped[int] = mapped_column(Integer)
     target_name: Mapped[str] = mapped_column(String(120))
@@ -362,7 +375,9 @@ class ArchivedSubmission(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     evaluation_id: Mapped[int] = mapped_column(ForeignKey("evaluations.id", ondelete="CASCADE"))
     reviewer_id: Mapped[int] = mapped_column(Integer)
+    reviewer_identity_key: Mapped[str] = mapped_column(String(64), default="", index=True)
     reviewer_name: Mapped[str] = mapped_column(String(120))
+    reviewer_department_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     department_name: Mapped[str] = mapped_column(String(120), default="")
     position_name: Mapped[str] = mapped_column(String(120), default="")
     task_count: Mapped[int] = mapped_column(Integer)

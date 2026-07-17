@@ -54,3 +54,12 @@ def require_api_admin(user: User = Depends(require_api_user)) -> User:
             detail="需要管理员权限。",
         )
     return user
+
+
+def require_super_admin(user: User = Depends(require_api_admin)) -> User:
+    if user.admin_scope_department_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="只有超级管理员可以执行此操作。",
+        )
+    return user

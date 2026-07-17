@@ -33,7 +33,7 @@ import {
 import { settingsApi } from "../api/settings";
 import { buildDepartmentTree, confirmDeletion, PageTitle, tablePagination } from "./routeShared";
 
-export default function ScoreOptionsPage() {
+export default function ScoreOptionsPage({ readOnly = false }: { readOnly?: boolean }) {
   const [rows, setRows] = useState<ScoreOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<ScoreOption | null>(null);
@@ -62,7 +62,7 @@ export default function ScoreOptionsPage() {
 
   return (
     <>
-      <PageTitle title="评分选项" extra={<Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>新增选项</Button>} />
+      <PageTitle title="评分选项" extra={!readOnly ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>新增选项</Button> : undefined} />
       <Table
         rowKey="id"
         loading={loading}
@@ -71,16 +71,16 @@ export default function ScoreOptionsPage() {
         columns={[
           { title: "名称", dataIndex: "name" },
           { title: "分值", dataIndex: "value" },
-          {
+          ...(!readOnly ? [{
             title: "操作",
             width: 180,
-            render: (_, record) => (
+            render: (_: unknown, record: ScoreOption) => (
               <Space>
                 <Button size="small" onClick={() => { setEditing(record); form.setFieldsValue(record); setOpen(true); }}>编辑</Button>
                 <Button size="small" danger onClick={() => confirmDeletion(modal, { title: "删除评分选项", content: record.name, action: () => masterDataApi.deleteScoreOption(record.id), onSuccess: async (result) => { message.success(result.message); await load(); } })}>删除</Button>
               </Space>
             )
-          }
+          }] : [])
         ]}
       />
       <Modal title={editing ? "编辑评分选项" : "新增评分选项"} open={open} onCancel={() => setOpen(false)} onOk={save}>
@@ -92,4 +92,3 @@ export default function ScoreOptionsPage() {
     </>
   );
 }
-

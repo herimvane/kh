@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_api_admin
+from app.api.deps import require_super_admin
 from app.database import get_db
 from app.models import SystemSetting, User
 
@@ -26,7 +26,7 @@ def get_settings(db: Session = Depends(get_db)) -> SystemSettingsPayload:
 
 
 @router.put("", response_model=SystemSettingsPayload)
-def update_settings(payload: SystemSettingsPayload, db: Session = Depends(get_db), _: User = Depends(require_api_admin)) -> SystemSettingsPayload:
+def update_settings(payload: SystemSettingsPayload, db: Session = Depends(get_db), _: User = Depends(require_super_admin)) -> SystemSettingsPayload:
     system_name = payload.system_name.strip()
     if not system_name:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="系统名称不能为空。")

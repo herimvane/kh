@@ -8,6 +8,24 @@ from sqlalchemy import create_engine, inspect, text
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_fresh_database_upgrades_to_head(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+    with engine.begin() as connection:
+        config = Config(str(ROOT / "alembic.ini"))
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
+
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260716_09"
+        evaluation_columns = {column["name"] for column in inspect(connection).get_columns("evaluations")}
+        user_columns = {column["name"] for column in inspect(connection).get_columns("users")}
+        assert {"scope_key", "owner_department_id", "created_by_id"} <= evaluation_columns
+        assert {"identity_key", "admin_scope_department_id"} <= user_columns
+        department_rule_columns = {column["name"] for column in inspect(connection).get_columns("evaluation_department_rules")}
+        assert "group_key" in department_rule_columns
+        archived_submission_columns = {column["name"] for column in inspect(connection).get_columns("archived_submissions")}
+        assert "reviewer_department_id" in archived_submission_columns
+
+
 def test_evaluation_batch_migration_repairs_drifted_revision(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'drifted.db'}")
     with engine.begin() as connection:
@@ -47,8 +65,8 @@ def test_evaluation_batch_migration_repairs_drifted_revision(tmp_path):
         command.upgrade(config, "head")
 
         columns = {column["name"] for column in inspect(connection).get_columns("evaluations")}
-        assert {"sequence", "open_slot"} <= columns
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260715_05"
+        assert {"sequence", "open_slot", "scope_key", "owner_department_id", "created_by_id"} <= columns
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260716_09"
         assert connection.execute(
             text("SELECT sequence, open_slot FROM evaluations WHERE id = 1")
         ).one() == (1, 1)

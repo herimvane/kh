@@ -3,23 +3,30 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import Integer, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_api_admin, require_api_user
+from app.api.admin_scope import (
+    ensure_department_manageable,
+    ensure_departments_manageable,
+    evaluation_scope_values,
+    manageable_department_ids,
+)
+from app.api.deps import require_api_admin, require_api_user, require_super_admin
 from app.api.evaluation_helpers import (
     add_audit_log,
     archived_config_payload,
     archived_snapshots,
-    current_open_evaluation,
     decimal_input,
     ensure_editable,
+    ensure_result_editable,
     evaluation_config_payload,
     evaluation_row,
     excel_response,
@@ -79,36 +86,51 @@ router = APIRouter(tags=["evaluations"])
 
 
 @router.get("/evaluations", response_model=list[EvaluationRow])
-def list_evaluations(db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def list_evaluations(db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    stmt = select(Evaluation)
+    allowed = manageable_department_ids(db, user)
+    if allowed is not None:
+        stmt = stmt.where(Evaluation.owner_department_id.in_(allowed))
     evaluations = db.scalars(
-        select(Evaluation).order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+        stmt.order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.created_at.desc(), Evaluation.id.desc())
     ).all()
     return [evaluation_row(db, evaluation) for evaluation in evaluations]
 
 
-def next_evaluation_sequence(db: Session, year: int) -> int:
-    current = db.scalar(select(func.max(Evaluation.sequence)).where(Evaluation.year == year)) or 0
+def next_evaluation_sequence(db: Session, year: int, scope_key: str) -> int:
+    current = db.scalar(
+        select(func.max(Evaluation.sequence)).where(
+            Evaluation.year == year,
+            Evaluation.scope_key == scope_key,
+        )
+    ) or 0
     return int(current) + 1
 
 
 @router.post("/evaluations", response_model=EvaluationRow, status_code=status.HTTP_201_CREATED)
 def create_evaluation(payload: EvaluationCreate, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    sequence = payload.sequence if payload.sequence is not None else next_evaluation_sequence(db, payload.year)
+    scope_key, owner_department_id, owner_name = evaluation_scope_values(db, user, payload.owner_department_id)
+    sequence = payload.sequence if payload.sequence is not None else next_evaluation_sequence(db, payload.year, scope_key)
     if sequence < 1:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="年内批次必须大于 0。")
     evaluation = Evaluation(
         year=payload.year,
         sequence=sequence,
         name=payload.name.strip() or f"{payload.year}-{sequence:02d}",
+        scope_key=scope_key,
+        owner_department_id=owner_department_id,
+        owner_department_name_snapshot=owner_name,
+        created_by_id=user.id,
     )
     db.add(evaluation)
     try:
         db.flush()
     except IntegrityError as exc:
         db.rollback()
+        scope_label = "" if scope_key == "GLOBAL" else f"{owner_name}下 "
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"{payload.year} 年第 {sequence} 批考核已存在。",
+            detail=f"{scope_label}{payload.year} 年第 {sequence} 批考核已存在。",
         ) from exc
     add_audit_log(db, evaluation.id, user, "新增考核", f"年度：{evaluation.year}；批次：{evaluation.sequence}")
     db.commit()
@@ -116,13 +138,16 @@ def create_evaluation(payload: EvaluationCreate, db: Session = Depends(get_db), 
 
 
 @router.get("/evaluations/audit")
-def evaluations_audit(q: str = "", page: int = 1, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def evaluations_audit(q: str = "", page: int = 1, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
     start_year = datetime.utcnow().year - 2
     rows_stmt = (
         select(EvaluationAuditLog, Evaluation.name.label("evaluation_name"), Evaluation.year.label("evaluation_year"))
         .join(Evaluation, Evaluation.id == EvaluationAuditLog.evaluation_id)
         .where(Evaluation.year >= start_year)
     )
+    allowed = manageable_department_ids(db, user)
+    if allowed is not None:
+        rows_stmt = rows_stmt.where(Evaluation.owner_department_id.in_(allowed))
     if q:
         like = f"%{q}%"
         rows_stmt = rows_stmt.where(or_(
@@ -154,14 +179,14 @@ def evaluations_audit(q: str = "", page: int = 1, db: Session = Depends(get_db),
 
 
 @router.get("/evaluations/{evaluation_id}/config")
-def evaluation_config(evaluation_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
-    return archived_config_payload(db, evaluation) if evaluation.archived else evaluation_config_payload(db, evaluation)
+def evaluation_config(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    evaluation = require_evaluation(db, evaluation_id, user)
+    return archived_config_payload(db, evaluation) if evaluation.archived else evaluation_config_payload(db, evaluation, user)
 
 
 @router.put("/evaluations/{evaluation_id}/person-options", response_model=MessageResponse)
 def update_person_options(evaluation_id: int, option_ids: list[int], db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     save_person_options(db, evaluation_id, option_ids)
     add_audit_log(db, evaluation_id, user, "保存人员评分选项", f"选项数量：{len(option_ids)}")
@@ -171,7 +196,7 @@ def update_person_options(evaluation_id: int, option_ids: list[int], db: Session
 
 @router.put("/evaluations/{evaluation_id}/department-options", response_model=MessageResponse)
 def update_department_options(evaluation_id: int, option_ids: list[int], db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     save_department_options(db, evaluation_id, option_ids)
     add_audit_log(db, evaluation_id, user, "保存部门评分选项", f"选项数量：{len(option_ids)}")
@@ -181,7 +206,7 @@ def update_department_options(evaluation_id: int, option_ids: list[int], db: Ses
 
 @router.post("/evaluations/{evaluation_id}/person-limits", response_model=MessageResponse)
 def upsert_person_limit(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     target_position_id = int(payload["target_position_id"])
     score_option_id = int(payload["score_option_id"])
@@ -206,7 +231,7 @@ def upsert_person_limit(evaluation_id: int, payload: dict, db: Session = Depends
 
 @router.delete("/evaluations/{evaluation_id}/person-limits/{limit_id}", response_model=MessageResponse)
 def delete_person_limit(evaluation_id: int, limit_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     limit = db.get(EvaluationPersonPositionOptionLimit, limit_id)
     if limit and limit.evaluation_id == evaluation_id:
@@ -218,7 +243,7 @@ def delete_person_limit(evaluation_id: int, limit_id: int, db: Session = Depends
 
 @router.post("/evaluations/{evaluation_id}/department-limits", response_model=MessageResponse)
 def upsert_department_limit(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     score_option_id = int(payload["score_option_id"])
     max_count = payload.get("max_count")
@@ -241,7 +266,7 @@ def upsert_department_limit(evaluation_id: int, payload: dict, db: Session = Dep
 
 @router.delete("/evaluations/{evaluation_id}/department-limits/{limit_id}", response_model=MessageResponse)
 def delete_department_limit(evaluation_id: int, limit_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     limit = db.get(EvaluationDepartmentOptionLimit, limit_id)
     if limit and limit.evaluation_id == evaluation_id:
@@ -253,14 +278,15 @@ def delete_department_limit(evaluation_id: int, limit_id: int, db: Session = Dep
 
 @router.post("/evaluations/{evaluation_id}/person-rules", response_model=MessageResponse)
 def create_person_rule(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     reviewer_position_id = int(payload["reviewer_position_id"])
     scope_type, department_ids = person_rule_scope(payload)
+    ensure_departments_manageable(db, user, department_ids)
     rule = EvaluationPersonRule(
         evaluation_id=evaluation_id,
         reviewer_position_id=reviewer_position_id,
-        reviewer_user_id=selected_reviewer_user_id(db, payload.get("reviewer_user_id"), reviewer_position_id),
+        reviewer_user_id=selected_reviewer_user_id(db, payload.get("reviewer_user_id"), reviewer_position_id, user),
         target_position_id=int(payload["target_position_id"]),
         score_group=(payload.get("score_group") or "").strip(),
         scope_type=scope_type,
@@ -277,15 +303,16 @@ def create_person_rule(evaluation_id: int, payload: dict, db: Session = Depends(
 
 @router.put("/evaluations/{evaluation_id}/person-rules/{rule_id}", response_model=MessageResponse)
 def update_person_rule(evaluation_id: int, rule_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     rule = db.get(EvaluationPersonRule, rule_id)
     if not rule or rule.evaluation_id != evaluation_id:
         raise HTTPException(status_code=404, detail="规则不存在。")
     reviewer_position_id = int(payload["reviewer_position_id"])
     scope_type, department_ids = person_rule_scope(payload)
+    ensure_departments_manageable(db, user, department_ids)
     rule.reviewer_position_id = reviewer_position_id
-    rule.reviewer_user_id = selected_reviewer_user_id(db, payload.get("reviewer_user_id"), reviewer_position_id)
+    rule.reviewer_user_id = selected_reviewer_user_id(db, payload.get("reviewer_user_id"), reviewer_position_id, user)
     rule.target_position_id = int(payload["target_position_id"])
     rule.score_group = (payload.get("score_group") or "").strip()
     rule.scope_type = scope_type
@@ -300,7 +327,7 @@ def update_person_rule(evaluation_id: int, rule_id: int, payload: dict, db: Sess
 
 @router.delete("/evaluations/{evaluation_id}/person-rules/{rule_id}", response_model=MessageResponse)
 def delete_person_rule(evaluation_id: int, rule_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     rule = db.get(EvaluationPersonRule, rule_id)
     if rule and rule.evaluation_id == evaluation_id:
@@ -312,13 +339,17 @@ def delete_person_rule(evaluation_id: int, rule_id: int, db: Session = Depends(g
 
 @router.post("/evaluations/{evaluation_id}/department-rules", response_model=MessageResponse)
 def create_department_rule(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
-    department_ids = payload.get("target_department_ids") or []
+    department_ids = list(dict.fromkeys(int(item) for item in (payload.get("target_department_ids") or [])))
     if not department_ids:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请选择被评部门。")
+    ensure_departments_manageable(db, user, set(department_ids))
+    group_key = str(uuid4())
+    reviewer_position_id = int(payload["reviewer_position_id"])
+    weight = decimal_input(payload["weight"], "权重")
     for department_id in department_ids:
-        db.add(EvaluationDepartmentRule(evaluation_id=evaluation_id, reviewer_position_id=int(payload["reviewer_position_id"]), target_department_id=int(department_id), weight=decimal_input(payload["weight"], "权重")))
+        db.add(EvaluationDepartmentRule(evaluation_id=evaluation_id, group_key=group_key, reviewer_position_id=reviewer_position_id, target_department_id=department_id, weight=weight))
     add_audit_log(db, evaluation_id, user, "新增部门考核规则", f"部门数量：{len(department_ids)}")
     db.commit()
     return MessageResponse(message="部门考核规则已添加。")
@@ -326,39 +357,59 @@ def create_department_rule(evaluation_id: int, payload: dict, db: Session = Depe
 
 @router.put("/evaluations/{evaluation_id}/department-rules/{rule_id}", response_model=MessageResponse)
 def update_department_rule(evaluation_id: int, rule_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     rule = db.get(EvaluationDepartmentRule, rule_id)
     if not rule or rule.evaluation_id != evaluation_id:
         raise HTTPException(status_code=404, detail="规则不存在。")
-    department_ids = payload.get("target_department_ids") or []
+    department_ids = list(dict.fromkeys(int(item) for item in (payload.get("target_department_ids") or [])))
     if not department_ids:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请选择被评部门。")
-    rule.reviewer_position_id = int(payload["reviewer_position_id"])
-    rule.target_department_id = int(department_ids[0])
-    rule.weight = decimal_input(payload["weight"], "权重")
+    ensure_departments_manageable(db, user, set(department_ids))
+    group_key = rule.group_key
+    grouped_rules = db.scalars(
+        select(EvaluationDepartmentRule)
+        .where(EvaluationDepartmentRule.evaluation_id == evaluation_id, EvaluationDepartmentRule.group_key == group_key)
+        .order_by(EvaluationDepartmentRule.id)
+    ).all()
+    primary_rule = grouped_rules[0]
+    reviewer_position_id = int(payload["reviewer_position_id"])
+    weight = decimal_input(payload["weight"], "权重")
+    primary_rule.reviewer_position_id = reviewer_position_id
+    primary_rule.target_department_id = department_ids[0]
+    primary_rule.weight = weight
+    for extra_rule in grouped_rules[1:]:
+        db.delete(extra_rule)
     for department_id in department_ids[1:]:
-        db.add(EvaluationDepartmentRule(evaluation_id=evaluation_id, reviewer_position_id=rule.reviewer_position_id, target_department_id=int(department_id), weight=rule.weight))
-    add_audit_log(db, evaluation_id, user, "更新部门考核规则", f"规则ID：{rule_id}；部门数量：{len(department_ids)}")
+        db.add(EvaluationDepartmentRule(evaluation_id=evaluation_id, group_key=group_key, reviewer_position_id=reviewer_position_id, target_department_id=department_id, weight=weight))
+    add_audit_log(db, evaluation_id, user, "更新部门考核规则", f"规则组：{group_key}；部门数量：{len(department_ids)}")
     db.commit()
     return MessageResponse(message="部门考核规则已更新。")
 
 
 @router.delete("/evaluations/{evaluation_id}/department-rules/{rule_id}", response_model=MessageResponse)
 def delete_department_rule(evaluation_id: int, rule_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     rule = db.get(EvaluationDepartmentRule, rule_id)
     if rule and rule.evaluation_id == evaluation_id:
-        db.delete(rule)
-        add_audit_log(db, evaluation_id, user, "删除部门考核规则", f"规则ID：{rule_id}")
+        group_key = rule.group_key
+        grouped_rules = db.scalars(
+            select(EvaluationDepartmentRule).where(
+                EvaluationDepartmentRule.evaluation_id == evaluation_id,
+                EvaluationDepartmentRule.group_key == group_key,
+            )
+        ).all()
+        for grouped_rule in grouped_rules:
+            db.delete(grouped_rule)
+        add_audit_log(db, evaluation_id, user, "删除部门考核规则", f"规则组：{group_key}；部门数量：{len(grouped_rules)}")
         db.commit()
     return MessageResponse(message="部门考核规则已删除。")
 
 
 @router.post("/evaluations/{evaluation_id}/share-rules", response_model=MessageResponse)
 def upsert_share_rule(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     target_position_id = int(payload["target_position_id"])
     weight = decimal_input(payload["weight"], "权重")
@@ -374,7 +425,7 @@ def upsert_share_rule(evaluation_id: int, payload: dict, db: Session = Depends(g
 
 @router.delete("/evaluations/{evaluation_id}/share-rules/{rule_id}", response_model=MessageResponse)
 def delete_share_rule(evaluation_id: int, rule_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     ensure_editable(evaluation)
     rule = db.get(EvaluationDepartmentScoreShareRule, rule_id)
     if rule and rule.evaluation_id == evaluation_id:
@@ -386,9 +437,10 @@ def delete_share_rule(evaluation_id: int, rule_id: int, db: Session = Depends(ge
 
 @router.post("/evaluations/{evaluation_id}/manual-department-scores", response_model=MessageResponse)
 def upsert_manual_score(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
-    ensure_editable(evaluation)
+    evaluation = require_evaluation(db, evaluation_id, user)
+    ensure_result_editable(evaluation)
     department_id = int(payload["department_id"])
+    ensure_departments_manageable(db, user, [department_id])
     score = decimal_input(payload["score"], "得分")
     existing = db.scalar(select(EvaluationDepartmentManualScore).where(EvaluationDepartmentManualScore.evaluation_id == evaluation_id, EvaluationDepartmentManualScore.department_id == department_id))
     if existing:
@@ -402,8 +454,8 @@ def upsert_manual_score(evaluation_id: int, payload: dict, db: Session = Depends
 
 @router.delete("/evaluations/{evaluation_id}/manual-department-scores/{score_id}", response_model=MessageResponse)
 def delete_manual_score(evaluation_id: int, score_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
-    ensure_editable(evaluation)
+    evaluation = require_evaluation(db, evaluation_id, user)
+    ensure_result_editable(evaluation)
     item = db.get(EvaluationDepartmentManualScore, score_id)
     if item and item.evaluation_id == evaluation_id:
         db.delete(item)
@@ -441,27 +493,38 @@ def archived_copy_missing(db: Session, evaluation_id: int) -> list[dict]:
 
 
 @router.get("/evaluations/{evaluation_id}/copy-preview")
-def copy_evaluation_preview(evaluation_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    source = require_evaluation(db, evaluation_id)
+def copy_evaluation_preview(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    source = require_evaluation(db, evaluation_id, user)
     missing = archived_copy_missing(db, source.id) if source.archived else []
+    allowed = manageable_department_ids(db, user)
+    department_candidates = department_choice_rows(db)
+    if allowed is not None:
+        department_candidates = [row for row in department_candidates if row["id"] in allowed]
+    user_stmt = select(User).where(User.role == "user", User.is_active.is_(True))
+    if allowed is not None:
+        user_stmt = user_stmt.where(User.department_id.in_(allowed))
     candidates = {
         "positions": [{"value": row["id"], "label": row["name"]} for row in position_rows(db)],
-        "departments": [{"value": row["id"], "label": row["display_name"].strip()} for row in department_choice_rows(db)],
+        "departments": [{"value": row["id"], "label": row["display_name"].strip()} for row in department_candidates],
         "score_options": [{"value": row.id, "label": f"{row.name}（{row.value:g}）"} for row in db.scalars(select(ScoreOption).order_by(ScoreOption.id)).all()],
-        "users": [{"value": row.id, "label": f"{row.full_name}（{row.department.name if row.department else '未分配部门'}）"} for row in db.scalars(select(User).where(User.role == "user", User.is_active.is_(True)).order_by(User.full_name)).all()],
+        "users": [{"value": row.id, "label": f"{row.full_name}（{row.department.name if row.department else '未分配部门'}）"} for row in db.scalars(user_stmt.order_by(User.full_name)).all()],
     }
     return {"missing": missing, "candidates": candidates}
 
 
 @router.post("/evaluations/{evaluation_id}/copy")
 def copy_evaluation(evaluation_id: int, payload: dict, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    source = require_evaluation(db, evaluation_id)
+    source = require_evaluation(db, evaluation_id, user)
     year = int(payload["year"])
-    sequence = next_evaluation_sequence(db, year)
+    sequence = next_evaluation_sequence(db, year, source.scope_key)
     target = Evaluation(
         year=year,
         sequence=sequence,
         name=(payload.get("name") or "").strip() or f"{year}-{sequence:02d}",
+        scope_key=source.scope_key,
+        owner_department_id=source.owner_department_id,
+        owner_department_name_snapshot=source.owner_department_name_snapshot,
+        created_by_id=user.id,
     )
     db.add(target)
     try:
@@ -543,7 +606,7 @@ def copy_evaluation(evaluation_id: int, payload: dict, db: Session = Depends(get
             if not exists(Position, position_id) or not exists(Department, department_id):
                 skipped.append(f"部门考核规则“{row.get('reviewer_position', '')}评价{row.get('target_department', '')}”")
                 continue
-            db.add(EvaluationDepartmentRule(evaluation_id=target.id, reviewer_position_id=position_id, target_department_id=department_id, weight=row.get("weight", 0)))
+            db.add(EvaluationDepartmentRule(evaluation_id=target.id, group_key=row.get("group_key") or str(uuid4()), reviewer_position_id=position_id, target_department_id=department_id, weight=row.get("weight", 0)))
             copied_count += 1
         for row in data.get("department_share_rules", []):
             position_id = row.get("source_target_position_id")
@@ -578,8 +641,10 @@ def copy_evaluation(evaluation_id: int, payload: dict, db: Session = Depends(get
         db.flush()
         for department in rule.target_departments:
             db.add(EvaluationPersonRuleDepartment(rule_id=copied.id, department_id=department.department_id))
+    copied_department_groups: dict[str, str] = {}
     for rule in db.scalars(select(EvaluationDepartmentRule).where(EvaluationDepartmentRule.evaluation_id == source.id)).all():
-        db.add(EvaluationDepartmentRule(evaluation_id=target.id, reviewer_position_id=rule.reviewer_position_id, target_department_id=rule.target_department_id, weight=rule.weight))
+        copied_group_key = copied_department_groups.setdefault(rule.group_key, str(uuid4()))
+        db.add(EvaluationDepartmentRule(evaluation_id=target.id, group_key=copied_group_key, reviewer_position_id=rule.reviewer_position_id, target_department_id=rule.target_department_id, weight=rule.weight))
     for rule in db.scalars(select(EvaluationDepartmentScoreShareRule).where(EvaluationDepartmentScoreShareRule.evaluation_id == source.id)).all():
         db.add(EvaluationDepartmentScoreShareRule(evaluation_id=target.id, target_position_id=rule.target_position_id, weight=rule.weight))
     for item in db.scalars(select(EvaluationDepartmentManualScore).where(EvaluationDepartmentManualScore.evaluation_id == source.id)).all():
@@ -601,7 +666,7 @@ def copy_evaluation(evaluation_id: int, payload: dict, db: Session = Depends(get
 
 @router.delete("/evaluations/{evaluation_id}", response_model=MessageResponse)
 def delete_evaluation(evaluation_id: int, admin_password: str = "", db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     if evaluation.archived and not admin_password:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="删除已归档考核前请输入当前管理员密码。")
     if evaluation.archived and not verify_password(admin_password, user.password_hash):
@@ -626,7 +691,7 @@ def delete_evaluation(evaluation_id: int, admin_password: str = "", db: Session 
 
 @router.post("/evaluations/{evaluation_id}/generate-tasks", response_model=EvaluationActionResponse)
 def generate_evaluation_tasks(evaluation_id: int, confirm: bool = False, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation_for_update(db, evaluation_id)
+    evaluation = require_evaluation_for_update(db, evaluation_id, user)
     if evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档考核不能生成任务。")
     existing_tasks = db.scalar(select(func.count(EvaluationTask.id)).where(EvaluationTask.evaluation_id == evaluation_id)) or 0
@@ -640,7 +705,7 @@ def generate_evaluation_tasks(evaluation_id: int, confirm: bool = False, db: Ses
 
 @router.post("/evaluations/{evaluation_id}/clear-tasks", response_model=EvaluationActionResponse)
 def clear_evaluation_tasks(evaluation_id: int, confirm: bool = False, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation_for_update(db, evaluation_id)
+    evaluation = require_evaluation_for_update(db, evaluation_id, user)
     if evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档考核不能清空任务。")
     if not confirm:
@@ -660,13 +725,19 @@ def clear_evaluation_tasks(evaluation_id: int, confirm: bool = False, db: Sessio
 
 @router.post("/evaluations/{evaluation_id}/toggle-open", response_model=EvaluationActionResponse)
 def toggle_evaluation(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation_for_update(db, evaluation_id)
+    evaluation = require_evaluation_for_update(db, evaluation_id, user)
     if evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档考核不能修改状态。")
-    if not evaluation.is_open:
+    opening = not evaluation.is_open
+    overlap_count = 0
+    if opening:
         active = db.scalar(
             select(Evaluation)
-            .where(Evaluation.is_open.is_(True), Evaluation.id != evaluation.id)
+            .where(
+                Evaluation.is_open.is_(True),
+                Evaluation.scope_key == evaluation.scope_key,
+                Evaluation.id != evaluation.id,
+            )
             .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
             .with_for_update()
         )
@@ -675,6 +746,18 @@ def toggle_evaluation(evaluation_id: int, db: Session = Depends(get_db), user: U
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"“{active.name}”正在开放，请先关闭该考核。",
             )
+        reviewer_ids = select(EvaluationTask.reviewer_id).where(
+            EvaluationTask.evaluation_id == evaluation.id,
+        ).distinct()
+        overlap_count = db.scalar(
+            select(func.count(func.distinct(EvaluationTask.reviewer_id)))
+            .join(Evaluation, Evaluation.id == EvaluationTask.evaluation_id)
+            .where(
+                Evaluation.is_open.is_(True),
+                Evaluation.id != evaluation.id,
+                EvaluationTask.reviewer_id.in_(reviewer_ids),
+            )
+        ) or 0
     evaluation.is_open = not evaluation.is_open
     evaluation.open_slot = 1 if evaluation.is_open else None
     add_audit_log(db, evaluation_id, user, "更新考核状态", "开放考核" if evaluation.is_open else "关闭考核")
@@ -684,17 +767,24 @@ def toggle_evaluation(evaluation_id: int, db: Session = Depends(get_db), user: U
         db.rollback()
         active = db.scalar(
             select(Evaluation)
-            .where(Evaluation.is_open.is_(True), Evaluation.id != evaluation_id)
+            .where(
+                Evaluation.is_open.is_(True),
+                Evaluation.scope_key == evaluation.scope_key,
+                Evaluation.id != evaluation_id,
+            )
             .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
         )
         detail = f"“{active.name}”正在开放，请先关闭该考核。" if active else "已有其他考核正在开放。"
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail) from exc
-    return EvaluationActionResponse(message="考核状态已更新。", evaluation=evaluation_row(db, evaluation))
+    message = "考核状态已更新。"
+    if opening and overlap_count:
+        message = f"考核已开放；有 {overlap_count} 名评价人同时参与其他开放考核，请留意任务区分。"
+    return EvaluationActionResponse(message=message, evaluation=evaluation_row(db, evaluation))
 
 
 @router.post("/evaluations/{evaluation_id}/archive", response_model=EvaluationActionResponse)
 def archive(evaluation_id: int, confirm: bool = False, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation_for_update(db, evaluation_id)
+    evaluation = require_evaluation_for_update(db, evaluation_id, user)
     if not confirm:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="归档会固化当前分数和规则快照，请确认后重试。")
     progress = evaluation_task_progress(db, evaluation_id)
@@ -714,10 +804,8 @@ def archive(evaluation_id: int, confirm: bool = False, db: Session = Depends(get
 
 
 @router.get("/evaluations/{evaluation_id}/live-stats")
-def live_stats(evaluation_id: int, q: str = "", people_page: int = 1, details_page: int = 1, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluation = db.get(Evaluation, evaluation_id)
-    if not evaluation:
-        raise HTTPException(status_code=404, detail="考核不存在。")
+def live_stats(evaluation_id: int, q: str = "", people_page: int = 1, details_page: int = 1, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    evaluation = require_evaluation(db, evaluation_id, user)
     result = calculate_evaluation_scores(db, evaluation)
     people = result["people"]
     departments = result["departments"]
@@ -750,10 +838,13 @@ def live_stats(evaluation_id: int, q: str = "", people_page: int = 1, details_pa
 
 
 @router.get("/evaluations/{evaluation_id}/review-submissions")
-def review_submissions(evaluation_id: int, q: str = "", page: int = 1, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+def review_submissions(evaluation_id: int, q: str = "", page: int = 1, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    evaluation = require_evaluation(db, evaluation_id, user)
+    allowed = manageable_department_ids(db, user)
     if evaluation.archived:
         stmt = select(ArchivedSubmission).where(ArchivedSubmission.evaluation_id == evaluation_id)
+        if allowed is not None:
+            stmt = stmt.where(ArchivedSubmission.reviewer_department_id.in_(allowed))
         if q.strip():
             like = f"%{q.strip()}%"
             stmt = stmt.where(or_(ArchivedSubmission.reviewer_name.like(like), ArchivedSubmission.department_name.like(like), ArchivedSubmission.position_name.like(like)))
@@ -769,7 +860,14 @@ def review_submissions(evaluation_id: int, q: str = "", page: int = 1, db: Sessi
             } for row in rows[(page_info.page - 1) * page_info.page_size:page_info.page * page_info.page_size]],
             "pagination": page_info,
         }
-    tasks = db.scalars(select(EvaluationTask).where(EvaluationTask.evaluation_id == evaluation_id).order_by(EvaluationTask.reviewer_id, EvaluationTask.id)).all()
+    task_stmt = (
+        select(EvaluationTask)
+        .join(User, User.id == EvaluationTask.reviewer_id)
+        .where(EvaluationTask.evaluation_id == evaluation_id)
+    )
+    if allowed is not None:
+        task_stmt = task_stmt.where(User.department_id.in_(allowed))
+    tasks = db.scalars(task_stmt.order_by(EvaluationTask.reviewer_id, EvaluationTask.id)).all()
     votes_by_reviewer = {
         reviewer_id: count
         for reviewer_id, count in db.execute(
@@ -829,9 +927,9 @@ def review_submission_details(
     payload: ScoreDetailPasswordRequest,
     page: int = 1,
     db: Session = Depends(get_db),
-    user: User = Depends(require_api_admin),
+    user: User = Depends(require_super_admin),
 ):
-    evaluation = require_evaluation(db, evaluation_id)
+    evaluation = require_evaluation(db, evaluation_id, user)
     if evaluation.archived:
         submission = db.scalar(select(ArchivedSubmission).where(
             ArchivedSubmission.evaluation_id == evaluation_id,
@@ -839,6 +937,7 @@ def review_submission_details(
         ))
         if not submission:
             raise HTTPException(status_code=404, detail="该用户在本次考核中没有评分任务。")
+        ensure_department_manageable(db, user, submission.reviewer_department_id)
         password_hash = score_detail_password_hash()
         if not password_hash:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="未配置评分详情查看密码。")
@@ -861,6 +960,7 @@ def review_submission_details(
     reviewer = db.get(User, reviewer_id)
     if not reviewer:
         raise HTTPException(status_code=404, detail="评分人不存在。")
+    ensure_department_manageable(db, user, reviewer.department_id)
     password_hash = score_detail_password_hash()
     if not password_hash:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="未配置评分详情查看密码。")
@@ -921,10 +1021,11 @@ def review_submission_details(
 
 @router.post("/evaluations/{evaluation_id}/review-submissions/{reviewer_id}/reopen", response_model=MessageResponse)
 def reopen_review_submission(evaluation_id: int, reviewer_id: int, payload: dict | None = None, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation_for_update(db, evaluation_id)
+    evaluation = require_evaluation_for_update(db, evaluation_id, user)
     reviewer = db.get(User, reviewer_id)
     if not reviewer:
         raise HTTPException(status_code=404, detail="评分人不存在。")
+    ensure_department_manageable(db, user, reviewer.department_id)
     if not evaluation.is_open or evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="只有考核开放且未归档时，才能允许用户重新修改评分。")
     task_count = db.scalar(select(func.count(EvaluationTask.id)).where(EvaluationTask.evaluation_id == evaluation_id, EvaluationTask.reviewer_id == reviewer_id)) or 0
@@ -945,7 +1046,11 @@ def reopen_review_submission(evaluation_id: int, reviewer_id: int, payload: dict
 
 @router.post("/evaluations/{evaluation_id}/review-submissions/{reviewer_id}/cancel", response_model=MessageResponse)
 def cancel_review_submission(evaluation_id: int, reviewer_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
-    evaluation = require_evaluation_for_update(db, evaluation_id)
+    evaluation = require_evaluation_for_update(db, evaluation_id, user)
+    reviewer = db.get(User, reviewer_id)
+    if not reviewer:
+        raise HTTPException(status_code=404, detail="评分人不存在。")
+    ensure_department_manageable(db, user, reviewer.department_id)
     if not evaluation.is_open or evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="只有考核开放且未归档时，才能取消重新修改权限。")
     db.execute(delete(EvaluationReviewReopen).where(EvaluationReviewReopen.evaluation_id == evaluation_id, EvaluationReviewReopen.reviewer_id == reviewer_id))
@@ -955,8 +1060,8 @@ def cancel_review_submission(evaluation_id: int, reviewer_id: int, db: Session =
 
 
 @router.get("/evaluations/{evaluation_id}/details")
-def evaluation_details(evaluation_id: int, q: str = "", people_page: int = 1, details_page: int = 1, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+def evaluation_details(evaluation_id: int, q: str = "", people_page: int = 1, details_page: int = 1, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    evaluation = require_evaluation(db, evaluation_id, user)
     people_stmt = select(ArchivedPersonScore).where(ArchivedPersonScore.evaluation_id == evaluation_id)
     departments_stmt = select(ArchivedDepartmentScore).where(ArchivedDepartmentScore.evaluation_id == evaluation_id)
     details_stmt = select(ArchivedVoteDetail).where(ArchivedVoteDetail.evaluation_id == evaluation_id)
@@ -991,8 +1096,8 @@ def evaluation_details(evaluation_id: int, q: str = "", people_page: int = 1, de
 
 
 @router.get("/evaluations/{evaluation_id}/exports/person-scores")
-def export_person_scores(evaluation_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+def export_person_scores(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    evaluation = require_evaluation(db, evaluation_id, user)
     if not evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="只能导出已归档考核的人员得分。")
     scores = db.scalars(
@@ -1005,8 +1110,8 @@ def export_person_scores(evaluation_id: int, db: Session = Depends(get_db), _: U
 
 
 @router.get("/evaluations/{evaluation_id}/exports/department-scores")
-def export_department_scores(evaluation_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    evaluation = require_evaluation(db, evaluation_id)
+def export_department_scores(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    evaluation = require_evaluation(db, evaluation_id, user)
     if not evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="只能导出已归档考核的部门得分。")
     scores = db.scalars(
@@ -1018,13 +1123,12 @@ def export_department_scores(evaluation_id: int, db: Session = Depends(get_db), 
     return excel_response(score_workbook("部门得分", ["部门名称", "得分"], rows), f"{evaluation.name}-部门得分.xlsx")
 
 
-@router.get("/app/evaluation")
-def app_evaluation(db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+def require_app_user(user: User) -> None:
     if user.role == "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="管理员无需参与评分。")
-    evaluation = current_open_evaluation(db)
-    if not evaluation:
-        return {"evaluation": None, "task_groups": [], "submitted": False, "reopened": False, "current_choices": {}, "limit_map": {}}
+
+
+def app_workspace_payload(db: Session, user: User, evaluation: Evaluation) -> dict:
     tasks = db.scalars(
         select(EvaluationTask)
         .where(EvaluationTask.evaluation_id == evaluation.id, EvaluationTask.reviewer_id == user.id)
@@ -1056,13 +1160,167 @@ def app_evaluation(db: Session = Depends(get_db), user: User = Depends(require_a
     }
 
 
-@router.post("/app/evaluation/submit", response_model=MessageResponse)
-def submit_evaluation(payload: VoteSubmitRequest, db: Session = Depends(get_db), user: User = Depends(require_api_user)):
-    evaluation = current_open_evaluation(db)
-    if not evaluation:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前没有开放中的考核。")
+@router.get("/app/evaluations")
+def app_evaluations(db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+    require_app_user(user)
+    live_rows = db.execute(
+        select(Evaluation, func.count(EvaluationTask.id).label("task_count"), func.sum(EvaluationTask.submitted.cast(Integer)).label("submitted_count"))
+        .join(EvaluationTask, EvaluationTask.evaluation_id == Evaluation.id)
+        .where(EvaluationTask.reviewer_id == user.id, Evaluation.archived.is_(False))
+        .group_by(Evaluation.id)
+        .order_by(Evaluation.is_open.desc(), Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+    ).all()
+    items = []
+    for evaluation, task_count, submitted_count in live_rows:
+        reopened = bool(db.scalar(select(EvaluationReviewReopen.id).where(
+            EvaluationReviewReopen.evaluation_id == evaluation.id,
+            EvaluationReviewReopen.reviewer_id == user.id,
+        )))
+        submitted_count = int(submitted_count or 0)
+        task_count = int(task_count or 0)
+        submitted = task_count > 0 and submitted_count >= task_count and not reopened
+        items.append({
+            "id": evaluation.id,
+            "name": evaluation.name,
+            "year": evaluation.year,
+            "sequence": evaluation.sequence,
+            "owner_department_name": evaluation.owner_department_name_snapshot or "全局",
+            "is_open": evaluation.is_open,
+            "archived": False,
+            "task_count": task_count,
+            "completed_count": submitted_count,
+            "submitted": submitted,
+            "status": "submitted" if submitted else "pending",
+            "created_at": evaluation.created_at,
+        })
+
+    archived_rows = db.execute(
+        select(ArchivedSubmission, Evaluation)
+        .join(Evaluation, Evaluation.id == ArchivedSubmission.evaluation_id)
+        .where(ArchivedSubmission.reviewer_identity_key == user.identity_key)
+        .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+    ).all()
+    for submission, evaluation in archived_rows:
+        items.append({
+            "id": evaluation.id,
+            "name": evaluation.name,
+            "year": evaluation.year,
+            "sequence": evaluation.sequence,
+            "owner_department_name": evaluation.owner_department_name_snapshot or "全局",
+            "is_open": False,
+            "archived": True,
+            "task_count": submission.task_count,
+            "completed_count": submission.submitted_count,
+            "submitted": True,
+            "status": "history",
+            "submitted_at": submission.submitted_at,
+            "created_at": evaluation.created_at,
+        })
+    return {"items": items}
+
+
+@router.get("/app/evaluations/{evaluation_id}")
+def app_evaluation_workspace(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+    require_app_user(user)
+    evaluation = db.get(Evaluation, evaluation_id)
+    if not evaluation or evaluation.archived:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="考核不存在或已归档。")
+    task_exists = db.scalar(select(EvaluationTask.id).where(
+        EvaluationTask.evaluation_id == evaluation_id,
+        EvaluationTask.reviewer_id == user.id,
+    ))
+    if not task_exists:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你没有该考核的评分任务。")
+    return app_workspace_payload(db, user, evaluation)
+
+
+@router.post("/app/evaluations/{evaluation_id}/submit", response_model=MessageResponse)
+def submit_app_evaluation(evaluation_id: int, payload: VoteSubmitRequest, db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+    require_app_user(user)
+    evaluation = db.get(Evaluation, evaluation_id)
+    if not evaluation or not evaluation.is_open or evaluation.archived:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该考核当前未开放。")
     try:
         submit_votes(db, evaluation, user, payload.choices)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return MessageResponse(message="评分已提交。")
+
+
+@router.get("/app/evaluations/{evaluation_id}/submission")
+def app_submission(evaluation_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+    require_app_user(user)
+    evaluation = db.get(Evaluation, evaluation_id)
+    if not evaluation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="考核不存在。")
+    if evaluation.archived:
+        submission = db.scalar(select(ArchivedSubmission).where(
+            ArchivedSubmission.evaluation_id == evaluation_id,
+            ArchivedSubmission.reviewer_identity_key == user.identity_key,
+        ))
+        if not submission:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你没有该考核的历史提交记录。")
+        details = db.scalars(select(ArchivedVoteDetail).where(
+            ArchivedVoteDetail.evaluation_id == evaluation_id,
+            ArchivedVoteDetail.reviewer_identity_key == user.identity_key,
+        ).order_by(ArchivedVoteDetail.id)).all()
+        return {
+            "evaluation": evaluation_row(db, evaluation),
+            "submitted_at": submission.submitted_at,
+            "task_count": submission.task_count,
+            "items": [{"id": item.id, "target_name": item.target_name, "task_type": item.task_type, "option_name": item.option_name} for item in details],
+        }
+    task_count = db.scalar(select(func.count(EvaluationTask.id)).where(
+        EvaluationTask.evaluation_id == evaluation_id,
+        EvaluationTask.reviewer_id == user.id,
+    )) or 0
+    if not task_count:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="你没有该考核的提交记录。")
+    votes = db.scalars(select(EvaluationVote).where(
+        EvaluationVote.evaluation_id == evaluation_id,
+        EvaluationVote.reviewer_id == user.id,
+    ).order_by(EvaluationVote.id)).all()
+    if len(votes) < task_count:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该考核尚未完整提交。")
+    return {
+        "evaluation": evaluation_row(db, evaluation),
+        "submitted_at": max((vote.created_at for vote in votes), default=None),
+        "task_count": task_count,
+        "items": [{
+            "id": vote.id,
+            "target_name": vote.task.target_user.full_name if vote.task.task_type == "person" and vote.task.target_user else vote.task.target_department.name if vote.task.target_department else "",
+            "task_type": vote.task.task_type,
+            "option_name": vote.option.name,
+        } for vote in votes],
+    }
+
+
+@router.get("/app/evaluation")
+def legacy_app_evaluation(db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+    require_app_user(user)
+    evaluations = db.scalars(
+        select(Evaluation)
+        .join(EvaluationTask, EvaluationTask.evaluation_id == Evaluation.id)
+        .where(Evaluation.is_open.is_(True), EvaluationTask.reviewer_id == user.id)
+        .distinct()
+        .order_by(Evaluation.year.desc(), Evaluation.sequence.desc(), Evaluation.id.desc())
+    ).all()
+    if not evaluations:
+        return {"evaluation": None, "task_groups": [], "submitted": False, "reopened": False, "current_choices": {}, "limit_map": {}}
+    if len(evaluations) > 1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前有多个考核，请从“我的考核”页面选择。")
+    return app_workspace_payload(db, user, evaluations[0])
+
+
+@router.post("/app/evaluation/submit", response_model=MessageResponse)
+def legacy_submit_evaluation(payload: VoteSubmitRequest, db: Session = Depends(get_db), user: User = Depends(require_api_user)):
+    require_app_user(user)
+    evaluations = db.scalars(
+        select(Evaluation)
+        .join(EvaluationTask, EvaluationTask.evaluation_id == Evaluation.id)
+        .where(Evaluation.is_open.is_(True), EvaluationTask.reviewer_id == user.id)
+        .distinct()
+    ).all()
+    if len(evaluations) != 1:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="请从“我的考核”页面选择要提交的考核。")
+    return submit_app_evaluation(evaluations[0].id, payload, db, user)

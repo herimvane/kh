@@ -11,6 +11,46 @@ export type Evaluation = {
   total_tasks: number;
   submitted_tasks: number;
   pending_reopens: number;
+  scope_key: string;
+  owner_department_id?: number | null;
+  owner_department_name: string;
+  created_by_id?: number | null;
+  created_by_name?: string | null;
+};
+
+export type MyEvaluation = {
+  id: number;
+  name: string;
+  year: number;
+  sequence: number;
+  owner_department_name: string;
+  is_open: boolean;
+  archived: boolean;
+  task_count: number;
+  completed_count: number;
+  submitted: boolean;
+  status: "pending" | "submitted" | "history";
+  submitted_at?: string | null;
+  created_at?: string | null;
+};
+
+export type MySubmission = {
+  evaluation: Evaluation;
+  submitted_at?: string | null;
+  task_count: number;
+  items: Array<{ id: number; target_name: string; task_type: "person" | "department"; option_name: string }>;
+};
+
+export type DashboardSummary = {
+  user_total: number;
+  department_total: number;
+  evaluation_total: number;
+  current_year_total: number;
+  active_total: number;
+  completed_total: number;
+  total_tasks: number;
+  submitted_tasks: number;
+  latest: Evaluation[];
 };
 
 export type EvaluationAction = {
@@ -124,7 +164,7 @@ export type EvaluationStatsResponse = {
 export const evaluationsApi = {
   list: () => apiRequest<Evaluation[]>("/api/evaluations"),
   config: (id: number) => apiRequest<EvaluationConfig>(`/api/evaluations/${id}/config`),
-  create: (payload: { year: number; sequence?: number; name?: string }) =>
+  create: (payload: { year: number; sequence?: number; name?: string; owner_department_id?: number | null }) =>
     apiRequest<Evaluation>("/api/evaluations", { method: "POST", body: JSON.stringify(payload) }),
   copyPreview: (id: number) => apiRequest<{
     missing: Array<{ kind: string; source_id: number; name: string }>;
@@ -189,9 +229,12 @@ export const evaluationsApi = {
   exportPersonScores: (id: number, evaluationName: string) => downloadApiFile(`/api/evaluations/${id}/exports/person-scores`, `${evaluationName}-人员得分.xlsx`),
   exportDepartmentScores: (id: number, evaluationName: string) => downloadApiFile(`/api/evaluations/${id}/exports/department-scores`, `${evaluationName}-部门得分.xlsx`),
   audit: () => apiRequest<any>("/api/evaluations/audit"),
-  appEvaluation: () => apiRequest<AppEvaluation>("/api/app/evaluation"),
-  submitAppEvaluation: (choices: Record<number, number>) =>
-    apiRequest<{ message: string }>("/api/app/evaluation/submit", {
+  dashboard: () => apiRequest<DashboardSummary>("/api/dashboard/summary"),
+  myEvaluations: () => apiRequest<{ items: MyEvaluation[] }>("/api/app/evaluations"),
+  appEvaluation: (evaluationId: number) => apiRequest<AppEvaluation>(`/api/app/evaluations/${evaluationId}`),
+  appSubmission: (evaluationId: number) => apiRequest<MySubmission>(`/api/app/evaluations/${evaluationId}/submission`),
+  submitAppEvaluation: (evaluationId: number, choices: Record<number, number>) =>
+    apiRequest<{ message: string }>(`/api/app/evaluations/${evaluationId}/submit`, {
       method: "POST",
       body: JSON.stringify({ choices })
     })

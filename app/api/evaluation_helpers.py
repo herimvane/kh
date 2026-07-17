@@ -10,7 +10,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.api.master_data import department_choice_rows, departments_order, position_rows, positions_order
+from app.api.admin_scope import can_access_evaluation, manageable_department_ids
+from app.api.master_data import department_choice_rows, department_path_map, departments_order, position_rows, positions_order
 from app.api.schemas import EvaluationRow
 from app.models import (
     ArchivedRuleSnapshot,
@@ -47,19 +48,33 @@ def decimal_input(value, field_name: str) -> Decimal:
 def ensure_editable(evaluation: Evaluation) -> None:
     if evaluation.archived:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档考核不能再修改。")
+    if evaluation.tasks_generated:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="考核任务已生成，不能修改配置。请先清空任务后再操作。",
+        )
 
 
-def require_evaluation(db: Session, evaluation_id: int) -> Evaluation:
+def ensure_result_editable(evaluation: Evaluation) -> None:
+    if evaluation.archived:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已归档考核不能再修改结果数据。")
+
+
+def require_evaluation(db: Session, evaluation_id: int, user: User) -> Evaluation:
     evaluation = db.get(Evaluation, evaluation_id)
     if not evaluation:
         raise HTTPException(status_code=404, detail="考核不存在。")
+    if not can_access_evaluation(db, user, evaluation):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该考核。")
     return evaluation
 
 
-def require_evaluation_for_update(db: Session, evaluation_id: int) -> Evaluation:
+def require_evaluation_for_update(db: Session, evaluation_id: int, user: User) -> Evaluation:
     evaluation = db.scalar(select(Evaluation).where(Evaluation.id == evaluation_id).with_for_update())
     if not evaluation:
         raise HTTPException(status_code=404, detail="考核不存在。")
+    if not can_access_evaluation(db, user, evaluation):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权管理该考核。")
     return evaluation
 
 
@@ -69,6 +84,37 @@ def snapshot_payload(payload: str) -> list[dict]:
     except (TypeError, json.JSONDecodeError):
         return []
     return value if isinstance(value, list) else []
+
+
+def summarize_department_names(names: list[str]) -> str:
+    visible = names[:2]
+    summary = "、".join(visible)
+    return f"{summary}等{len(names)}个部门" if len(names) > 2 else summary
+
+
+def group_department_rule_rows(rows: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for index, row in enumerate(rows):
+        group_key = row.get("group_key") or f"legacy:{row.get('id', index)}"
+        if group_key not in grouped:
+            grouped[group_key] = {
+                "id": row.get("id", index + 1),
+                "group_key": group_key,
+                "reviewer_position_id": row.get("reviewer_position_id"),
+                "reviewer_position_name": row.get("reviewer_position_name", ""),
+                "target_department_ids": [],
+                "target_department_names": [],
+                "weight": row.get("weight", 0),
+            }
+        grouped[group_key]["target_department_ids"].append(row.get("target_department_id"))
+        grouped[group_key]["target_department_names"].append(row.get("target_department_name", ""))
+
+    result = []
+    for group in grouped.values():
+        group["target_department_id"] = group["target_department_ids"][0]
+        group["target_department_name"] = summarize_department_names(group["target_department_names"])
+        result.append(group)
+    return result
 
 
 def archived_snapshots(db: Session, evaluation_id: int) -> dict[str, list[dict]]:
@@ -81,6 +127,18 @@ def archived_config_payload(db: Session, evaluation: Evaluation) -> dict:
     person_options = data.get("person_options", [])
     department_options = data.get("department_options", [])
     option_rows = person_options + [item for item in department_options if item.get("source_score_option_id") not in {row.get("source_score_option_id") for row in person_options}]
+    archived_department_rules = group_department_rule_rows([
+        {
+            "id": i + 1,
+            "group_key": row.get("group_key") or f"archived:{i + 1}",
+            "reviewer_position_id": row.get("source_reviewer_position_id"),
+            "reviewer_position_name": row.get("reviewer_position", ""),
+            "target_department_id": row.get("source_target_department_id"),
+            "target_department_name": row.get("target_department", ""),
+            "weight": row.get("weight", 0),
+        }
+        for i, row in enumerate(data.get("department_rules", []))
+    ])
     return {
         "evaluation": evaluation_row(db, evaluation), "positions": [], "departments": [],
         "score_options": [{"id": row.get("source_score_option_id", i + 1), "name": row.get("name", ""), "value": row.get("value", 0)} for i, row in enumerate(option_rows)],
@@ -95,7 +153,7 @@ def archived_config_payload(db: Session, evaluation: Evaluation) -> dict:
             "target_department_label": "、".join(row.get("target_departments", [])) or ("同部门" if row.get("scope_type") == "same_department" else "全部"),
             "weight": row.get("weight", 0),
         } for i, row in enumerate(data.get("person_rules", []))],
-        "department_rules": [{"id": i + 1, "reviewer_position_id": row.get("source_reviewer_position_id"), "reviewer_position_name": row.get("reviewer_position", ""), "target_department_id": row.get("source_target_department_id"), "target_department_name": row.get("target_department", ""), "weight": row.get("weight", 0)} for i, row in enumerate(data.get("department_rules", []))],
+        "department_rules": archived_department_rules,
         "person_limits": [{"id": i + 1, "target_position_id": row.get("source_target_position_id"), "target_position_name": row.get("target_position", ""), "score_option_id": row.get("source_score_option_id"), "score_option_name": row.get("option", ""), "max_people": row.get("max_people")} for i, row in enumerate(data.get("person_limits", []))],
         "department_limits": [{"id": i + 1, "score_option_id": row.get("source_score_option_id"), "score_option_name": row.get("option", ""), "max_count": row.get("max_count")} for i, row in enumerate(data.get("department_limits", []))],
         "share_rules": [{"id": i + 1, "target_position_id": row.get("source_target_position_id"), "target_position_name": row.get("target_position", ""), "weight": row.get("weight", 0)} for i, row in enumerate(data.get("department_share_rules", []))],
@@ -158,6 +216,10 @@ def evaluation_row(db: Session, evaluation: Evaluation) -> EvaluationRow:
         total_tasks=progress["total_tasks"],
         submitted_tasks=progress["submitted_tasks"],
         pending_reopens=progress["pending_reopens"],
+        scope_key=evaluation.scope_key,
+        owner_department_id=evaluation.owner_department_id,
+        owner_department_name=evaluation.owner_department_name_snapshot or "全局",
+        created_by_id=evaluation.created_by_id,
     )
 
 
@@ -303,12 +365,15 @@ def task_groups(db: Session, tasks: list[EvaluationTask]) -> list[dict]:
     return groups
 
 
-def selected_reviewer_user_id(db: Session, reviewer_user_id: int | None, reviewer_position_id: int) -> int | None:
+def selected_reviewer_user_id(db: Session, reviewer_user_id: int | None, reviewer_position_id: int, user: User) -> int | None:
     if not reviewer_user_id:
         return None
     reviewer = db.get(User, reviewer_user_id)
     if not reviewer or reviewer.role != "user" or not reviewer.is_active or reviewer.position_id != reviewer_position_id:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="指定评价人必须是所选评分人职位下的启用普通用户。")
+    allowed = manageable_department_ids(db, user)
+    if allowed is not None and reviewer.department_id not in allowed:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="指定评价人超出当前管理员的数据范围。")
     return reviewer.id
 
 
@@ -354,13 +419,16 @@ def save_department_options(db: Session, evaluation_id: int, option_ids: list[in
         db.execute(delete(EvaluationDepartmentOptionLimit).where(EvaluationDepartmentOptionLimit.evaluation_id == evaluation_id))
 
 
-def evaluation_config_payload(db: Session, evaluation: Evaluation) -> dict:
+def evaluation_config_payload(db: Session, evaluation: Evaluation, user: User) -> dict:
     positions = position_rows(db)
     departments = department_choice_rows(db)
+    allowed = manageable_department_ids(db, user)
+    if allowed is not None:
+        departments = [item for item in departments if item["id"] in allowed]
     score_options = [{"id": item.id, "name": item.name, "value": item.value} for item in db.scalars(select(ScoreOption).order_by(ScoreOption.id)).all()]
     person_options = evaluation_person_options(db, evaluation.id)
     department_options = evaluation_department_options(db, evaluation.id)
-    department_labels = {item["id"]: item["display_name"] for item in departments}
+    department_labels = department_path_map(db)
     person_rules = []
     for rule in db.scalars(select(EvaluationPersonRule).where(EvaluationPersonRule.evaluation_id == evaluation.id).order_by(EvaluationPersonRule.id)).all():
         person_rules.append({
@@ -377,16 +445,18 @@ def evaluation_config_payload(db: Session, evaluation: Evaluation) -> dict:
             "target_department_label": "、".join(department_labels.get(item.department_id, "") for item in rule.target_departments) or ("同部门" if rule.scope_type == "same_department" else "全部"),
             "weight": rule.weight,
         })
-    department_rules = []
+    department_rule_rows = []
     for rule in db.scalars(select(EvaluationDepartmentRule).where(EvaluationDepartmentRule.evaluation_id == evaluation.id).order_by(EvaluationDepartmentRule.id)).all():
-        department_rules.append({
+        department_rule_rows.append({
             "id": rule.id,
+            "group_key": rule.group_key,
             "reviewer_position_id": rule.reviewer_position_id,
             "reviewer_position_name": rule.reviewer_position.name,
             "target_department_id": rule.target_department_id,
             "target_department_name": department_labels.get(rule.target_department_id, rule.target_department.name),
             "weight": rule.weight,
         })
+    department_rules = group_department_rule_rows(department_rule_rows)
     person_limits = [
         {
             "id": item.id,
@@ -455,4 +525,3 @@ def evaluation_config_payload(db: Session, evaluation: Evaluation) -> dict:
         "share_rules": share_rules,
         "manual_scores": manual_scores,
     }
-

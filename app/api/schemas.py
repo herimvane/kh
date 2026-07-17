@@ -17,6 +17,9 @@ class UserSummary(BaseModel):
     must_change_password: bool = False
     department_id: int | None = None
     position_id: int | None = None
+    admin_scope_department_id: int | None = None
+    admin_scope_department_name: str | None = None
+    is_super_admin: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -94,6 +97,7 @@ class UserCreate(BaseModel):
     role: str = "user"
     department_id: int | None = None
     position_id: int | None = None
+    admin_scope_department_id: int | None = None
 
 
 class UserUpdate(BaseModel):
@@ -103,6 +107,7 @@ class UserUpdate(BaseModel):
     is_active: bool = True
     department_id: int | None = None
     position_id: int | None = None
+    admin_scope_department_id: int | None = None
     password: str = ""
 
 
@@ -117,6 +122,9 @@ class UserRow(BaseModel):
     position_id: int | None = None
     department_name: str | None = None
     position_name: str | None = None
+    admin_scope_department_id: int | None = None
+    admin_scope_department_name: str | None = None
+    is_super_admin: bool = False
 
 
 class UserListResponse(BaseModel):
@@ -143,6 +151,7 @@ class EvaluationCreate(BaseModel):
     year: int
     sequence: int | None = None
     name: str = ""
+    owner_department_id: int | None = None
 
 
 class EvaluationRow(BaseModel):
@@ -156,6 +165,10 @@ class EvaluationRow(BaseModel):
     total_tasks: int = 0
     submitted_tasks: int = 0
     pending_reopens: int = 0
+    scope_key: str = "GLOBAL"
+    owner_department_id: int | None = None
+    owner_department_name: str = "全局"
+    created_by_id: int | None = None
 
 
 class EvaluationActionResponse(BaseModel):

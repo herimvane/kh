@@ -34,7 +34,7 @@ import {
 import { settingsApi } from "../api/settings";
 import { buildDepartmentTree, confirmDeletion, PageTitle, tablePagination } from "./routeShared";
 
-export default function DepartmentsPage() {
+export default function DepartmentsPage({ readOnly = false }: { readOnly?: boolean }) {
   const [rows, setRows] = useState<Department[]>([]);
   const [choices, setChoices] = useState<DepartmentChoice[]>([]);
   const [loading, setLoading] = useState(false);
@@ -99,7 +99,7 @@ export default function DepartmentsPage() {
     { title: "排序", dataIndex: "sort_order", width: 90 },
     { title: "部门名称", dataIndex: "name" },
     { title: "上级部门", dataIndex: "parent_name", render: (value) => value || "-" },
-    {
+    ...(!readOnly ? [{
       title: "操作",
       width: 180,
       render: (_, record) => (
@@ -114,12 +114,12 @@ export default function DepartmentsPage() {
           </Button>
         </Space>
       )
-    }
+    }] as ColumnsType<Department> : [])
   ];
 
   return (
     <>
-      <PageTitle title="部门管理" extra={<Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>新增部门</Button>} />
+      <PageTitle title="部门管理" extra={!readOnly ? <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>新增部门</Button> : undefined} />
       <Table rowKey="id" columns={columns} dataSource={rows} loading={loading} pagination={tablePagination()} />
       <Modal title={editing ? "编辑部门" : "新增部门"} open={open} onCancel={() => setOpen(false)} onOk={save}>
         <Form form={form} layout="vertical">

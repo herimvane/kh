@@ -24,11 +24,14 @@ def user_summary(user: User) -> UserSummary:
         must_change_password=user.must_change_password,
         department_id=user.department_id,
         position_id=user.position_id,
+        admin_scope_department_id=user.admin_scope_department_id,
+        admin_scope_department_name=user.admin_scope_department.name if user.admin_scope_department else None,
+        is_super_admin=user.role == "admin" and user.admin_scope_department_id is None,
     )
 
 
 def role_home(user: User) -> str:
-    return "/admin" if user.role == "admin" else "/app/evaluation"
+    return "/admin" if user.role == "admin" else "/app/evaluations"
 
 
 @router.post("/login", response_model=LoginResponse)

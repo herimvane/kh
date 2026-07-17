@@ -1,11 +1,12 @@
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
-from app.api.deps import require_api_admin
+from app.api.admin_scope import manageable_department_ids
+from app.api.deps import require_api_admin, require_super_admin
 from app.api.schemas import (
     DepartmentChoice,
     DepartmentCreate,
@@ -28,6 +29,7 @@ from app.api.schemas import (
 from app.database import get_db
 from app.models import (
     Department,
+    Evaluation,
     EvaluationDepartmentManualScore,
     EvaluationDepartmentOptionLimit,
     EvaluationDepartmentRule,
@@ -198,6 +200,30 @@ def department_choice_rows(db: Session) -> list[dict]:
     return choices
 
 
+def department_path_map(db: Session) -> dict[int, str]:
+    departments = {row["id"]: row for row in department_rows(db)}
+    paths: dict[int, str] = {}
+
+    def build_path(department_id: int) -> str:
+        if department_id in paths:
+            return paths[department_id]
+        names: list[str] = []
+        current_id: int | None = department_id
+        visited: set[int] = set()
+        while current_id is not None and current_id not in visited:
+            visited.add(current_id)
+            current = departments.get(current_id)
+            if current is None:
+                break
+            names.append(current["name"])
+            current_id = current["parent_id"]
+        path = " / ".join(reversed(names))
+        paths[department_id] = path
+        return path
+
+    return {department_id: build_path(department_id) for department_id in departments}
+
+
 def position_rows(db: Session) -> list[dict]:
     rows = db.execute(select(Position.id, Position.name, Position.sort_order).order_by(*positions_order())).all()
     return [{"id": row.id, "name": row.name, "sort_order": row.sort_order} for row in rows]
@@ -224,6 +250,8 @@ def department_delete_references(db: Session, department_id: int) -> list[str]:
     checks = [
         ("下级部门", Department, Department.parent_id == department_id),
         ("人员", User, User.department_id == department_id),
+        ("管理员管理范围", User, User.admin_scope_department_id == department_id),
+        ("未归档考核归属", Evaluation, and_(Evaluation.owner_department_id == department_id, Evaluation.archived.is_(False))),
         ("人员考核规则部门范围", EvaluationPersonRuleDepartment, EvaluationPersonRuleDepartment.department_id == department_id),
         ("部门考核规则", EvaluationDepartmentRule, EvaluationDepartmentRule.target_department_id == department_id),
         ("部门得分占比旧规则", EvaluationDepartmentShareRule, EvaluationDepartmentShareRule.department_id == department_id),
@@ -315,7 +343,7 @@ def list_department_choices(db: Session = Depends(get_db), _: User = Depends(req
 
 
 @router.post("/departments", response_model=DepartmentRow, status_code=status.HTTP_201_CREATED)
-def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     validate_department_parent(db, payload.parent_id)
     name = validate_department_name(db, payload.name, payload.parent_id)
     target_order = reserve_sort_order(db, Department, payload.sort_order) if payload.sort_order else next_sort_order(db, Department)
@@ -330,7 +358,7 @@ def create_department(payload: DepartmentCreate, db: Session = Depends(get_db), 
 
 
 @router.put("/departments/{department_id}", response_model=DepartmentRow)
-def update_department(department_id: int, payload: DepartmentUpdate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def update_department(department_id: int, payload: DepartmentUpdate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     department = db.get(Department, department_id)
     if not department:
         raise HTTPException(status_code=404, detail="部门不存在。")
@@ -343,7 +371,7 @@ def update_department(department_id: int, payload: DepartmentUpdate, db: Session
 
 
 @router.delete("/departments/{department_id}", response_model=MessageResponse)
-def delete_department(department_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def delete_department(department_id: int, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     department = db.get(Department, department_id)
     if not department:
         raise HTTPException(status_code=404, detail="部门不存在。")
@@ -361,7 +389,7 @@ def list_positions(db: Session = Depends(get_db), _: User = Depends(require_api_
 
 
 @router.post("/positions", response_model=PositionRow, status_code=status.HTTP_201_CREATED)
-def create_position(payload: PositionCreate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def create_position(payload: PositionCreate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     target_order = reserve_sort_order(db, Position, payload.sort_order) if payload.sort_order else next_sort_order(db, Position)
     position = Position(name=payload.name.strip(), sort_order=target_order)
     db.add(position)
@@ -370,7 +398,7 @@ def create_position(payload: PositionCreate, db: Session = Depends(get_db), _: U
 
 
 @router.put("/positions/{position_id}", response_model=PositionRow)
-def update_position(position_id: int, payload: PositionUpdate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def update_position(position_id: int, payload: PositionUpdate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     position = db.get(Position, position_id)
     if not position:
         raise HTTPException(status_code=404, detail="职位不存在。")
@@ -381,7 +409,7 @@ def update_position(position_id: int, payload: PositionUpdate, db: Session = Dep
 
 
 @router.delete("/positions/{position_id}", response_model=MessageResponse)
-def delete_position(position_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def delete_position(position_id: int, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     position = db.get(Position, position_id)
     if not position:
         raise HTTPException(status_code=404, detail="职位不存在。")
@@ -394,18 +422,22 @@ def delete_position(position_id: int, db: Session = Depends(get_db), _: User = D
 
 
 @router.get("/positions/{position_id}/reviewer-users", response_model=list[ReviewerUserRow])
-def reviewer_users_by_position(position_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
-    users = db.execute(
+def reviewer_users_by_position(position_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+    stmt = (
         select(User.id, User.full_name, Department.name.label("department_name"))
         .outerjoin(Department, User.department_id == Department.id)
         .where(User.role == "user", User.is_active.is_(True), User.position_id == position_id)
         .order_by(User.full_name, User.id)
-    ).all()
+    )
+    allowed = manageable_department_ids(db, user)
+    if allowed is not None:
+        stmt = stmt.where(User.department_id.in_(allowed))
+    users = db.execute(stmt).all()
     return [{"id": user.id, "name": user.full_name, "department_name": user.department_name} for user in users]
 
 
 @router.get("/users", response_model=UserListResponse)
-def list_users(q: str = "", page: int = 1, department_id: int | None = None, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def list_users(q: str = "", page: int = 1, department_id: int | None = None, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
     page_size = 10
     page = max(page, 1)
     users_stmt = (
@@ -418,6 +450,7 @@ def list_users(q: str = "", page: int = 1, department_id: int | None = None, db:
             User.must_change_password,
             User.department_id,
             User.position_id,
+            User.admin_scope_department_id,
             Department.name.label("department_name"),
             Position.name.label("position_name"),
         )
@@ -426,8 +459,18 @@ def list_users(q: str = "", page: int = 1, department_id: int | None = None, db:
         .order_by(User.role, Department.sort_order, Department.id, Position.sort_order, Position.id, User.id)
     )
     count_stmt = select(func.count(User.id))
+    allowed = manageable_department_ids(db, user)
+    if allowed is not None:
+        scope_clause = or_(
+            User.department_id.in_(allowed),
+            User.admin_scope_department_id.in_(allowed),
+        )
+        users_stmt = users_stmt.where(scope_clause)
+        count_stmt = count_stmt.where(scope_clause)
     if department_id is not None:
         branch_ids = department_branch_ids(db, department_id)
+        if allowed is not None:
+            branch_ids &= allowed
         users_stmt = users_stmt.where(User.department_id.in_(branch_ids))
         count_stmt = count_stmt.where(User.department_id.in_(branch_ids))
     if q:
@@ -438,6 +481,8 @@ def list_users(q: str = "", page: int = 1, department_id: int | None = None, db:
     total = db.scalar(count_stmt) or 0
     page_info = pagination(total, page, page_size)
     user_rows = db.execute(users_stmt.offset((page_info.page - 1) * page_size).limit(page_size)).all()
+    department_paths = department_path_map(db)
+    department_names = {row["id"]: row["name"] for row in department_rows(db)}
     items = [
         {
             "id": row.id,
@@ -448,8 +493,11 @@ def list_users(q: str = "", page: int = 1, department_id: int | None = None, db:
             "must_change_password": row.must_change_password,
             "department_id": row.department_id,
             "position_id": row.position_id,
-            "department_name": row.department_name,
+            "department_name": department_paths.get(row.department_id, row.department_name),
             "position_name": row.position_name,
+            "admin_scope_department_id": row.admin_scope_department_id,
+            "admin_scope_department_name": department_names.get(row.admin_scope_department_id) if row.admin_scope_department_id else None,
+            "is_super_admin": row.role == "admin" and row.admin_scope_department_id is None,
         }
         for row in user_rows
     ]
@@ -457,18 +505,22 @@ def list_users(q: str = "", page: int = 1, department_id: int | None = None, db:
 
 
 @router.post("/users", response_model=UserRow, status_code=status.HTTP_201_CREATED)
-def create_user(payload: UserCreate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def create_user(payload: UserCreate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
+    if payload.role == "admin" and payload.admin_scope_department_id is not None and not db.get(Department, payload.admin_scope_department_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="管理员管理范围部门不存在。")
     user = User(
         username=payload.username.strip(),
         full_name=payload.full_name.strip(),
         password_hash=hash_password(payload.password or "password!"),
         must_change_password=True,
         role=payload.role,
-        department_id=payload.department_id,
-        position_id=payload.position_id,
+        department_id=None if payload.role == "admin" else payload.department_id,
+        position_id=None if payload.role == "admin" else payload.position_id,
+        admin_scope_department_id=payload.admin_scope_department_id if payload.role == "admin" else None,
     )
     db.add(user)
     commit_or_integrity_error(db, "用户名已存在。")
+    department_paths = department_path_map(db)
     return UserRow(
         id=user.id,
         username=user.username,
@@ -478,28 +530,42 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), _: User = De
         must_change_password=user.must_change_password,
         department_id=user.department_id,
         position_id=user.position_id,
+        department_name=department_paths.get(user.department_id) if user.department_id else None,
+        position_name=user.position.name if user.position else None,
+        admin_scope_department_id=user.admin_scope_department_id,
+        admin_scope_department_name=user.admin_scope_department.name if user.admin_scope_department else None,
+        is_super_admin=user.role == "admin" and user.admin_scope_department_id is None,
     )
 
 
 @router.put("/users/{target_id}", response_model=UserRow)
-def update_user(target_id: int, payload: UserUpdate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def update_user(target_id: int, payload: UserUpdate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     target = db.get(User, target_id)
     if not target:
         raise HTTPException(status_code=404, detail="人员不存在。")
-    revoke_sessions = bool(payload.password) or not payload.is_active or payload.role != target.role
+    if payload.role == "admin" and payload.admin_scope_department_id is not None and not db.get(Department, payload.admin_scope_department_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="管理员管理范围部门不存在。")
+    revoke_sessions = (
+        bool(payload.password)
+        or not payload.is_active
+        or payload.role != target.role
+        or payload.admin_scope_department_id != target.admin_scope_department_id
+    )
     target.username = payload.username.strip()
     target.full_name = payload.full_name.strip()
     target.role = payload.role
     target.is_active = payload.is_active
-    target.department_id = payload.department_id
-    target.position_id = payload.position_id
+    target.department_id = None if payload.role == "admin" else payload.department_id
+    target.position_id = None if payload.role == "admin" else payload.position_id
+    target.admin_scope_department_id = payload.admin_scope_department_id if payload.role == "admin" else None
     if payload.password:
         target.password_hash = hash_password(payload.password)
         target.must_change_password = True
     if revoke_sessions:
         db.execute(delete(UserSession).where(UserSession.user_id == target.id))
     commit_or_integrity_error(db, "用户名已存在。")
-    department_name = target.department.name if target.department else None
+    department_paths = department_path_map(db)
+    department_name = department_paths.get(target.department_id) if target.department_id else None
     position_name = target.position.name if target.position else None
     return UserRow(
         id=target.id,
@@ -512,11 +578,14 @@ def update_user(target_id: int, payload: UserUpdate, db: Session = Depends(get_d
         position_id=target.position_id,
         department_name=department_name,
         position_name=position_name,
+        admin_scope_department_id=target.admin_scope_department_id,
+        admin_scope_department_name=target.admin_scope_department.name if target.admin_scope_department else None,
+        is_super_admin=target.role == "admin" and target.admin_scope_department_id is None,
     )
 
 
 @router.delete("/users/{target_id}", response_model=MessageResponse)
-def delete_user(target_id: int, db: Session = Depends(get_db), user: User = Depends(require_api_admin)):
+def delete_user(target_id: int, db: Session = Depends(get_db), user: User = Depends(require_super_admin)):
     target = db.get(User, target_id)
     if not target:
         raise HTTPException(status_code=404, detail="人员不存在。")
@@ -537,7 +606,7 @@ def list_score_options(db: Session = Depends(get_db), _: User = Depends(require_
 
 
 @router.post("/score-options", response_model=ScoreOptionRow, status_code=status.HTTP_201_CREATED)
-def create_score_option(payload: ScoreOptionCreate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def create_score_option(payload: ScoreOptionCreate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     option = ScoreOption(name=payload.name.strip(), value=Decimal(str(payload.value)))
     db.add(option)
     commit_or_integrity_error(db, "评分选项名称已存在。")
@@ -545,7 +614,7 @@ def create_score_option(payload: ScoreOptionCreate, db: Session = Depends(get_db
 
 
 @router.put("/score-options/{option_id}", response_model=ScoreOptionRow)
-def update_score_option(option_id: int, payload: ScoreOptionUpdate, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def update_score_option(option_id: int, payload: ScoreOptionUpdate, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     option = db.get(ScoreOption, option_id)
     if not option:
         raise HTTPException(status_code=404, detail="评分选项不存在。")
@@ -556,7 +625,7 @@ def update_score_option(option_id: int, payload: ScoreOptionUpdate, db: Session 
 
 
 @router.delete("/score-options/{option_id}", response_model=MessageResponse)
-def delete_score_option(option_id: int, db: Session = Depends(get_db), _: User = Depends(require_api_admin)):
+def delete_score_option(option_id: int, db: Session = Depends(get_db), _: User = Depends(require_super_admin)):
     option = db.get(ScoreOption, option_id)
     if not option:
         raise HTTPException(status_code=404, detail="评分选项不存在。")

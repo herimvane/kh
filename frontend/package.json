@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "check:styles": "node scripts/check-design-tokens.mjs",
+    "build": "npm run check:styles && tsc -b && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -9,6 +9,9 @@ export type UserSummary = {
   must_change_password: boolean;
   department_id?: number | null;
   position_id?: number | null;
+  admin_scope_department_id?: number | null;
+  admin_scope_department_name?: string | null;
+  is_super_admin: boolean;
 };
 
 export type LoginResponse = {
